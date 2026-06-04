@@ -1,6 +1,6 @@
 {
   "name": "nextjs-proxy",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Universal, secure proxy for Next.js. Centralize, audit, and control all external API calls from a single entry point.",
   "author": "Haroldy Arturo Pérez Rodríguez <haroldyarturo@gmail.com>",
   "license": "MIT",

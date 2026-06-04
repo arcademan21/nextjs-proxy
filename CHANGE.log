@@ -1,3 +1,18 @@
+# CHANGE.log 2026-06-04 (v2.1.1)
+
+- **Docs only (no runtime change):** documentation and language-consistency pass.
+	- Rewrote the README with a product-adoption focus: leads with the problem,
+	  presents named routes as the recommended happy path with a before/after
+	  comparison, and documents security, CORS credentials, the rate-limit store,
+	  and timeouts against the actual handler API. All English.
+	- Removed the "No Turbopack Compatibility" warning. Verified empirically:
+	  installing the published tarball into a Next.js 15.5 app and running
+	  `next build --turbopack` compiles the proxy route cleanly. The package is
+	  Turbopack-compatible from the registry; the old warning only reflected
+	  Turbopack's local symlink/workspace resolution during package development.
+	- Translated the remaining Spanish JSDoc/inline comments in `src/proxy.ts`
+	  and the full CHANGE.log to English. `tsc` clean and 54/54 tests pass.
+
 # CHANGE.log 2026-06-04 (v2.1.0)
 
 - **Named routes (stronger SSRF protection):** new `routes` option
