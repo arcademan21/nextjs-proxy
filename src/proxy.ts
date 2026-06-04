@@ -399,21 +399,29 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       } catch {
         /* ignore empty body */
       }
-      let { method, endpoint, data } = payload;
+      let { method, endpoint, data } = payload as {
+        method?: unknown;
+        endpoint?: unknown;
+        data?: unknown;
+      };
 
       if (options.transformRequest) {
+        // Do NOT coerce missing values to the string "undefined" here: that
+        // would be truthy and slip past the validation guard below, causing a
+        // proxy attempt to a bogus endpoint. Pass empty strings for absent
+        // values and only overwrite when the transform returns a real value.
         const transformed =
           options.transformRequest({
-            method: String(method),
-            endpoint: String(endpoint),
+            method: method == null ? "" : String(method),
+            endpoint: endpoint == null ? "" : String(endpoint),
             data:
               typeof data === "object" && data !== null
                 ? (data as Record<string, unknown>)
                 : {},
           }) || {};
-        method = transformed.method ?? String(method);
-        endpoint = transformed.endpoint ?? String(endpoint);
-        data = transformed.data ?? data;
+        if (transformed.method !== undefined) method = transformed.method;
+        if (transformed.endpoint !== undefined) endpoint = transformed.endpoint;
+        if (transformed.data !== undefined) data = transformed.data;
       }
 
       if (!method || !endpoint) {

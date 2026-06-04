@@ -324,6 +324,25 @@ describe("nextProxyHandler", () => {
     const res = await handler(req);
     expect(getStatus(res)).toBe(400);
   });
+
+  it("returns 400 when method/endpoint are missing even if transformRequest is set", async () => {
+    const realFetch = global.fetch;
+    const spy = jest.fn() as unknown as typeof fetch;
+    global.fetch = spy;
+    try {
+      const handler = await nextProxyHandler({
+        // A transform that does not supply method/endpoint must not cause the
+        // missing values to be coerced to the truthy string "undefined".
+        transformRequest: ({ data }) => ({ data }),
+      });
+      const req = createMockRequest({ body: {} });
+      const res = await handler(req);
+      expect(getStatus(res)).toBe(400);
+      expect(spy as unknown as jest.Mock).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
 });
 
 describe("nextProxyHandler — SSRF protection (allowedHosts)", () => {
