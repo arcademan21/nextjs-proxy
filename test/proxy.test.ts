@@ -657,3 +657,147 @@ describe("nextProxyHandler — pluggable rate-limit store", () => {
     expect(b.increment("x", 1000).count).toBe(1);
   });
 });
+
+describe("nextProxyHandler — named routes", () => {
+  const realFetch = global.fetch;
+  function mockFetch() {
+    const fn = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+      text: async () => '{"ok":true}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })) as unknown as typeof fetch;
+    global.fetch = fn;
+    return fn as unknown as jest.Mock;
+  }
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it("resolves a named route server-side and ignores a client endpoint", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({
+      routes: { users: "https://api.internal.com/v1/users" },
+    });
+    const req = createMockRequest({
+      // The client tries to smuggle its own endpoint; it must be ignored.
+      body: {
+        method: "GET",
+        route: "users",
+        endpoint: "https://evil.com/steal",
+      },
+    });
+    expect(getStatus(await handler(req))).toBeLessThan(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0][0])).toBe(
+      "https://api.internal.com/v1/users"
+    );
+  });
+
+  it("returns 400 for an unknown route without disclosing route names", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ routes: { users: "https://a.com/u" } });
+    const req = createMockRequest({
+      body: { method: "GET", route: "secrets" },
+    });
+    const res = await handler(req);
+    expect(getStatus(res)).toBe(400);
+    const body = await getBody(res);
+    expect(body.error).toBe("Unknown route");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when a route is sent but routes are not configured", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler();
+    const req = createMockRequest({ body: { method: "GET", route: "users" } });
+    expect(getStatus(await handler(req))).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve inherited object keys as routes", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ routes: { users: "https://a.com/u" } });
+    const req = createMockRequest({
+      body: { method: "GET", route: "constructor" },
+    });
+    expect(getStatus(await handler(req))).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("bypasses allowedHosts for trusted named routes", async () => {
+    const spy = mockFetch();
+    // The route host is NOT in allowedHosts, yet a server-defined route is
+    // trusted and must be allowed.
+    const handler = nextProxyHandler({
+      allowedHosts: ["only-this.com"],
+      routes: { pay: "https://payments.partner.com/charge" },
+    });
+    const req = createMockRequest({
+      body: { method: "POST", route: "pay", data: { amount: 10 } },
+    });
+    expect(getStatus(await handler(req))).toBeLessThan(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0][0])).toBe(
+      "https://payments.partner.com/charge"
+    );
+  });
+
+  it("still blocks a named route that resolves to an internal host", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({
+      routes: { meta: "http://169.254.169.254/latest/meta-data/" },
+    });
+    const req = createMockRequest({ body: { method: "GET", route: "meta" } });
+    expect(getStatus(await handler(req))).toBe(403);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("allows a named route to an internal host when allowPrivateHosts is set", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({
+      allowPrivateHosts: true,
+      routes: { local: "http://127.0.0.1:4000/health" },
+    });
+    const req = createMockRequest({ body: { method: "GET", route: "local" } });
+    expect(getStatus(await handler(req))).toBeLessThan(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves a relative named route via baseUrl", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({
+      baseUrl: "https://api.service.com",
+      routes: { health: "/v1/health" },
+    });
+    const req = createMockRequest({ body: { method: "GET", route: "health" } });
+    expect(getStatus(await handler(req))).toBeLessThan(400);
+    expect(String(spy.mock.calls[0][0])).toBe(
+      "https://api.service.com/v1/health"
+    );
+  });
+
+  it("supports the function form of routes", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({
+      routes: (name) =>
+        name === "ok" ? "https://api.fn.com/ok" : undefined,
+    });
+    expect(
+      getStatus(
+        await handler(
+          createMockRequest({ body: { method: "GET", route: "ok" } })
+        )
+      )
+    ).toBeLessThan(400);
+    expect(
+      getStatus(
+        await handler(
+          createMockRequest({ body: { method: "GET", route: "nope" } })
+        )
+      )
+    ).toBe(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+});

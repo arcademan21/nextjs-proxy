@@ -18,6 +18,12 @@ export interface ProxyRequestPayload {
   method: string;
   endpoint: string;
   data?: Record<string, unknown>;
+  /**
+   * Name of a server-defined route (see `NextProxyOptions.routes`). When the
+   * client sends `{ route }`, the proxy resolves it to `endpoint` server-side,
+   * so the client never controls the destination URL.
+   */
+  route?: string;
 }
 
 export interface ProxyResponsePayload {
@@ -95,6 +101,24 @@ export interface NextProxyOptions {
    * Disabled by default to prevent SSRF against cloud metadata and internal services.
    */
   allowPrivateHosts?: boolean;
+  /**
+   * Named server-side routes. The SAFEST way to use this proxy: the client
+   * sends `{ route: "name" }` instead of a raw URL and the server resolves the
+   * destination here, so the client never controls where the request goes
+   * (eliminates client-driven SSRF for this mode).
+   *
+   * - Record form: a `{ name: url }` map. `url` may be absolute or a relative
+   *   path resolved via `baseUrl`.
+   * - Function form: `(name, req) => url | undefined`. Return `undefined` to
+   *   reject an unknown route.
+   *
+   * Resolved named-route destinations are server-defined and therefore trusted:
+   * they bypass `allowedHosts`, but still respect `allowPrivateHosts` and the
+   * `http`/`https` protocol check as defense in depth.
+   */
+  routes?:
+    | Record<string, string>
+    | ((name: string, req: NextRequest) => string | undefined);
   /** Custom response when origin is not allowed */
   onCorsDenied?: (origin: string) => unknown;
   /**
@@ -285,15 +309,38 @@ function matchHostPattern(pattern: string, hostname: string): boolean {
 }
 
 /**
+ * Resolve a named route to a destination URL using `options.routes`.
+ * Returns undefined when routes are not configured or the name is unknown.
+ */
+function resolveNamedRoute(
+  name: string,
+  req: NextRequest,
+  options: NextProxyOptions
+): string | undefined {
+  const routes = options.routes;
+  if (!routes) return undefined;
+  if (typeof routes === "function") return routes(name, req) || undefined;
+  // Own-property check avoids resolving inherited keys like "constructor".
+  return Object.prototype.hasOwnProperty.call(routes, name)
+    ? routes[name]
+    : undefined;
+}
+
+/**
  * SSRF guard. Decide whether the resolved upstream URL may be fetched.
  * Secure by default: internal hosts are blocked (unless `allowPrivateHosts`),
  * and absolute hosts must match `baseUrl`'s host, `allowedHosts`, or be approved
  * by the `allowedHosts` function. Returns a reason for logging when denied.
+ *
+ * `trusted` marks a server-defined destination (a resolved named route); it
+ * bypasses the `allowedHosts` allowlist but still enforces the protocol and
+ * internal-host checks.
  */
 function isUpstreamAllowed(
   rawUrl: string,
   req: NextRequest,
-  options: NextProxyOptions
+  options: NextProxyOptions,
+  trusted = false
 ): { ok: boolean; reason?: string } {
   let url: URL;
   try {
@@ -308,6 +355,11 @@ function isUpstreamAllowed(
 
   if (!options.allowPrivateHosts && isInternalHost(host)) {
     return { ok: false, reason: "Blocked internal/private host" };
+  }
+
+  // Server-defined named routes are trusted destinations; skip the allowlist.
+  if (trusted) {
+    return { ok: true };
   }
 
   // The host of baseUrl is implicitly trusted (relative endpoints resolve here).
@@ -483,11 +535,35 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       } catch {
         /* ignore empty body */
       }
-      let { method, endpoint, data } = payload as {
+      let { method, endpoint, data, route } = payload as {
         method?: unknown;
         endpoint?: unknown;
         data?: unknown;
+        route?: unknown;
       };
+
+      // Named route resolution. When the client sends `{ route }`, resolve the
+      // destination server-side so the client never controls the URL. A
+      // resolved route is a trusted, server-defined destination.
+      let routeTrusted = false;
+      if (route != null && route !== "") {
+        if (!options.routes) {
+          return NextResponse.json(
+            { error: "Named routes are not configured" },
+            { status: 400 }
+          );
+        }
+        const resolved = resolveNamedRoute(String(route), req, options);
+        if (!resolved) {
+          // Generic message: do not disclose which route names exist.
+          return NextResponse.json(
+            { error: "Unknown route" },
+            { status: 400 }
+          );
+        }
+        endpoint = resolved;
+        routeTrusted = true;
+      }
 
       if (options.transformRequest) {
         // Do NOT coerce missing values to the string "undefined" here: that
@@ -502,6 +578,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
               typeof data === "object" && data !== null
                 ? (data as Record<string, unknown>)
                 : {},
+            route: route == null ? undefined : String(route),
           }) || {};
         if (transformed.method !== undefined) method = transformed.method;
         if (transformed.endpoint !== undefined) endpoint = transformed.endpoint;
@@ -530,7 +607,12 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       }
 
       // SSRF guard: validate the final upstream host before issuing the fetch.
-      const upstreamCheck = isUpstreamAllowed(String(endpoint), req, options);
+      const upstreamCheck = isUpstreamAllowed(
+        String(endpoint),
+        req,
+        options,
+        routeTrusted
+      );
       if (!upstreamCheck.ok) {
         if (options.log)
           options.log({
