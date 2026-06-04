@@ -169,22 +169,28 @@ export const POST = nextProxyHandler({
 
 ---
 
-## Usage with Pages Router
+## Pages Router (not supported in `pages/api` routes)
+
+`nextProxyHandler` is built on the **Web Fetch API** (`NextRequest` /
+`NextResponse` from `next/server`): it receives a `Request` and returns a
+`Response`. Classic **Pages Router API routes** (`pages/api/*`) use Node-style
+`(req: NextApiRequest, res: NextApiResponse)` handlers instead, which are **not
+compatible** with this signature. There is no drop-in adapter.
+
+If your project still uses the Pages Router, add an **App Router route handler**
+for the proxy — App Router and Pages Router can coexist in the same project:
 
 ```ts
-// pages/api/proxy.ts
-import type { NextApiRequest, NextApiResponse } from "next";
+// app/api/proxy/route.ts  (works even in a Pages Router project)
 import { nextProxyHandler } from "nextjs-proxy";
 
-const handler = nextProxyHandler({ baseUrl: process.env.EXTERNAL_API_BASE });
-
-export default async function proxy(req: NextApiRequest, res: NextApiResponse) {
-  // Minimal adapter
-  // You may need to create a Request from NextApiRequest if needed
-  // App Router is recommended for full compatibility.
-  res.status(405).json({ error: "Use App Router for this package" });
-}
+export const POST = nextProxyHandler({
+  baseUrl: process.env.EXTERNAL_API_BASE,
+});
 ```
+
+Your Pages Router frontend can then call `/api/proxy` normally (see the combined
+example below).
 
 ## Combined usage: App Router API + Pages Router frontend
 
