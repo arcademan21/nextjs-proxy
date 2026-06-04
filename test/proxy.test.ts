@@ -64,6 +64,22 @@ function createMockRequest({
 }
 
 describe("nextProxyHandler", () => {
+  // Mock the network so the happy-path suite never hits a real host
+  // (previously these tests depended on jsonplaceholder.typicode.com).
+  const realFetch = global.fetch;
+  beforeEach(() => {
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 1, ok: true }),
+      text: async () => '{"id":1,"ok":true}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
   it("should block unauthorized requests with auth", async () => {
     const handler = await nextProxyHandler({
       auth: () => false,
