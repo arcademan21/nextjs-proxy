@@ -77,6 +77,14 @@ export interface NextProxyOptions {
   corsMethods?: string[];
   /** Encabezados permitidos para CORS (por defecto Content-Type, Authorization) */
   corsHeaders?: string[];
+  /**
+   * Emit `Access-Control-Allow-Credentials: true` so browsers send cookies and
+   * Authorization on cross-origin requests. The proxy always reflects the
+   * specific request origin (never `*`), so enabling this stays spec-compliant.
+   * Only enable it with a real `allowOrigins` allowlist — never a blanket `"*"`
+   * intent — since credentialed CORS must target a trusted origin. Default false.
+   */
+  corsCredentials?: boolean;
   /** Mask sensitive data before sending */
   maskSensitiveData?: (data: unknown) => unknown;
   /** Base URL for relative endpoints */
@@ -409,6 +417,23 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
     }
     return false;
   }
+  // Build the CORS grant headers for an allowed origin. Reflects the specific
+  // request origin (never literal "*") so it can be combined with credentials.
+  function corsGrantHeaders(origin: string): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Headers": (
+        options.corsHeaders ?? ["Content-Type", "Authorization"]
+      ).join(", "),
+      "Access-Control-Allow-Methods": (
+        options.corsMethods ?? ["POST", "OPTIONS"]
+      ).join(","),
+    };
+    if (options.corsCredentials) {
+      headers["Access-Control-Allow-Credentials"] = "true";
+    }
+    return headers;
+  }
   return async function handler(req: NextRequest) {
     const origin = req.headers.get("origin") || "";
 
@@ -472,15 +497,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       }
       return new NextResponse(null, {
         status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": origin,
-          "Access-Control-Allow-Headers": (
-            options.corsHeaders ?? ["Content-Type", "Authorization"]
-          ).join(", "),
-          "Access-Control-Allow-Methods": (
-            options.corsMethods ?? ["POST", "OPTIONS"]
-          ).join(","),
-        },
+        headers: corsGrantHeaders(origin),
       });
     }
 
@@ -719,17 +736,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       if (!upstream.ok)
         return NextResponse.json(response, { status: upstream.status });
       return NextResponse.json(response, {
-        headers: options.allowOrigins
-          ? {
-              "Access-Control-Allow-Origin": origin,
-              "Access-Control-Allow-Headers": (
-                options.corsHeaders ?? ["Content-Type", "Authorization"]
-              ).join(", "),
-              "Access-Control-Allow-Methods": (
-                options.corsMethods ?? ["POST", "OPTIONS"]
-              ).join(","),
-            }
-          : undefined,
+        headers: options.allowOrigins ? corsGrantHeaders(origin) : undefined,
       });
     } catch (error) {
       const isTimeout =

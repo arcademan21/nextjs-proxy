@@ -801,3 +801,115 @@ describe("nextProxyHandler — named routes", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("nextProxyHandler — CORS credentials and transform edge cases", () => {
+  const realFetch = global.fetch;
+  function mockFetch(body: { json: any; text: string }) {
+    const fn = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        if (body.json instanceof Error) throw body.json;
+        return body.json;
+      },
+      text: async () => body.text,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })) as unknown as typeof fetch;
+    global.fetch = fn;
+    return fn as unknown as jest.Mock;
+  }
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it("emits Allow-Credentials and reflects the specific origin on preflight", async () => {
+    mockFetch({ json: { ok: true }, text: '{"ok":true}' });
+    const handler = nextProxyHandler({
+      allowOrigins: ["https://app.com"],
+      corsCredentials: true,
+    });
+    const res = await handler(
+      createMockRequest({
+        method: "OPTIONS",
+        headers: { origin: "https://app.com" },
+      })
+    );
+    expect(getStatus(res)).toBe(204);
+    // Must be the specific origin, never "*", when credentials are on.
+    expect(getHeader(res, "Access-Control-Allow-Origin")).toBe(
+      "https://app.com"
+    );
+    expect(getHeader(res, "Access-Control-Allow-Credentials")).toBe("true");
+  });
+
+  it("emits Allow-Credentials on the successful proxied response", async () => {
+    mockFetch({ json: { id: 1 }, text: '{"id":1}' });
+    const handler = nextProxyHandler({
+      allowOrigins: ["https://app.com"],
+      corsCredentials: true,
+      allowedHosts: ["api.example.com"],
+    });
+    const res = await handler(
+      createMockRequest({
+        headers: { origin: "https://app.com" },
+        body: { method: "GET", endpoint: "https://api.example.com/data" },
+      })
+    );
+    expect(getHeader(res, "Access-Control-Allow-Origin")).toBe(
+      "https://app.com"
+    );
+    expect(getHeader(res, "Access-Control-Allow-Credentials")).toBe("true");
+  });
+
+  it("omits Allow-Credentials when corsCredentials is not set", async () => {
+    mockFetch({ json: { ok: true }, text: '{"ok":true}' });
+    const handler = nextProxyHandler({ allowOrigins: ["https://app.com"] });
+    const res = await handler(
+      createMockRequest({
+        method: "OPTIONS",
+        headers: { origin: "https://app.com" },
+      })
+    );
+    expect(getHeader(res, "Access-Control-Allow-Credentials")).toBeNull();
+  });
+
+  it("does not apply transformResponse to a non-object (text) body", async () => {
+    // Upstream returns plain text, not JSON: json() throws, text() wins.
+    mockFetch({ json: new Error("not json"), text: "plain-text-body" });
+    let called = false;
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      transformResponse: (res) => {
+        called = true;
+        return res;
+      },
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/text" },
+      })
+    );
+    const body = await getBody(res);
+    expect(body).toBe("plain-text-body");
+    expect(called).toBe(false);
+  });
+
+  it("lets transformRequest rewrite the endpoint before the SSRF check", async () => {
+    const spy = mockFetch({ json: { ok: true }, text: '{"ok":true}' });
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      transformRequest: () => ({
+        endpoint: "https://api.example.com/rewritten",
+      }),
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "/ignored" },
+      })
+    );
+    expect(getStatus(res)).toBeLessThan(400);
+    expect(String(spy.mock.calls[0][0])).toBe(
+      "https://api.example.com/rewritten"
+    );
+  });
+});
