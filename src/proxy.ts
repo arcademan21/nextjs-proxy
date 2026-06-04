@@ -42,6 +42,14 @@ import { NextRequest, NextResponse } from "next/server";
 // HTTP methods that do not have a body
 const WITHOUT_BODY = ["GET", "HEAD"];
 
+// Content-Type fragments that mark a streaming/chunked body for `stream: "auto"`.
+const STREAMING_CONTENT_TYPES = [
+  "text/event-stream",
+  "application/x-ndjson",
+  "application/stream+json",
+  "application/octet-stream",
+];
+
 // Options for the proxy handler
 export interface NextProxyOptions {
   /** Authentication validation */
@@ -131,6 +139,40 @@ export interface NextProxyOptions {
     | ((name: string, req: NextRequest) => string | undefined);
   /** Custom response when origin is not allowed */
   onCorsDenied?: (origin: string) => unknown;
+  /**
+   * Stream the upstream response body straight back to the client instead of
+   * buffering it. Essential for Server-Sent Events and chunked APIs (e.g. LLM
+   * token streaming from OpenAI/Anthropic) and large payloads that would
+   * otherwise be fully held in memory.
+   *
+   * - `false` / unset (default): buffer the response (JSON/text/binary). Keeps
+   *   backward compatibility and is required for `transformResponse`.
+   * - `true`: always pass the raw upstream body through, preserving the upstream
+   *   status and `Content-Type`.
+   * - `"auto"`: pass through only when the upstream `Content-Type` looks like a
+   *   stream (`text/event-stream`, `application/x-ndjson`,
+   *   `application/stream+json`, `application/octet-stream`); otherwise buffer.
+   * - function: `(req) => boolean | "auto"` to decide per request.
+   *
+   * NOTE: `transformResponse` is intentionally skipped for a streamed body (it
+   * would require buffering the whole thing). When both are set, streaming wins
+   * for matching responses and the transform is not applied. The `log` callback
+   * still fires with `payload: "[stream]"`, and `monitor` is called without the
+   * response argument (the body is never buffered).
+   *
+   * SECURITY / OPERATIONAL NOTES:
+   * - All guards (auth, csrf, CORS, rate limit, validate, SSRF) run before the
+   *   fetch, so streaming never bypasses them.
+   * - Only `content-type` and `cache-control` are forwarded from the upstream;
+   *   every other upstream header (including `Set-Cookie`) is dropped, and
+   *   `X-Content-Type-Options: nosniff` is added. `text/event-stream` also gets
+   *   `X-Accel-Buffering: no` for reverse proxies that buffer by default.
+   * - `timeoutMs` only guards time-to-headers; once the stream begins there is
+   *   no idle/total timeout, so a slow upstream keeps the connection open up to
+   *   the platform's function limit. Client disconnects rely on the runtime
+   *   cancelling the upstream body.
+   */
+  stream?: boolean | "auto" | ((req: NextRequest) => boolean | "auto");
   /**
    * In-memory rate limiter implementation.
    *
@@ -334,6 +376,33 @@ function resolveNamedRoute(
   return Object.prototype.hasOwnProperty.call(routes, name)
     ? routes[name]
     : undefined;
+}
+
+/**
+ * Decide whether to stream the upstream response straight through instead of
+ * buffering it. Returns false for the default buffered behavior. For `"auto"`,
+ * inspects the upstream `Content-Type`. Defensive about a missing `headers`
+ * object so it never throws on the buffered path or in tests.
+ */
+function shouldStream(
+  opt: NextProxyOptions["stream"],
+  req: NextRequest,
+  upstream: { headers?: { get?: (key: string) => string | null } }
+): boolean {
+  if (!opt) return false;
+  const decision = typeof opt === "function" ? opt(req) : opt;
+  if (decision === true) return true;
+  if (decision === "auto") {
+    // Compare the MIME essence only (drop parameters like "; charset=...") with
+    // an exact match, so a contrived value such as
+    // `text/html; charset="application/x-ndjson"` cannot trip the heuristic.
+    const ct = (upstream.headers?.get?.("content-type") || "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    return STREAMING_CONTENT_TYPES.includes(ct);
+  }
+  return false;
 }
 
 /**
@@ -719,6 +788,54 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         if (timer) clearTimeout(timer);
       }
       const durationMs = Date.now() - started;
+
+      // Streaming passthrough: pipe the upstream body straight to the client
+      // without buffering. Enabled by `stream`; for `"auto"` only when the
+      // upstream Content-Type looks like a stream. Essential for SSE / token
+      // streaming (LLMs) and large payloads. The timeout above only guards the
+      // time-to-headers (the timer is cleared once `fetch` resolves), so it
+      // never cuts an in-progress stream. `transformResponse` is skipped here
+      // by design — applying it would require buffering the whole body.
+      if (shouldStream(options.stream, req, upstream)) {
+        const streamHeaders = new Headers();
+        const upstreamCt = upstream.headers?.get?.("content-type");
+        if (upstreamCt) streamHeaders.set("content-type", upstreamCt);
+        const upstreamCache = upstream.headers?.get?.("cache-control");
+        if (upstreamCache) streamHeaders.set("cache-control", upstreamCache);
+        // The streamed body forwards the upstream Content-Type verbatim (unlike
+        // the buffered path, which always emits application/json). Disable MIME
+        // sniffing so a misdeclared or attacker-influenced body cannot be
+        // reinterpreted as active content on the proxy's own origin.
+        streamHeaders.set("x-content-type-options", "nosniff");
+        // Server-Sent Events break behind buffering reverse proxies (e.g. nginx)
+        // unless buffering is explicitly disabled for the connection.
+        if ((upstreamCt || "").split(";")[0].trim().toLowerCase() === "text/event-stream") {
+          streamHeaders.set("x-accel-buffering", "no");
+        }
+        if (options.allowOrigins) {
+          for (const [k, v] of Object.entries(corsGrantHeaders(origin))) {
+            streamHeaders.set(k, v);
+          }
+        }
+        if (options.log)
+          options.log({
+            type: "response",
+            level: "info",
+            timestamp: new Date().toISOString(),
+            ip: getClientIp(req),
+            method: String(method),
+            origin,
+            endpoint: String(endpoint),
+            status: upstream.status,
+            durationMs,
+            payload: "[stream]",
+          });
+        if (options.monitor) options.monitor(req);
+        return new NextResponse(upstream.body as BodyInit | null, {
+          status: upstream.status,
+          headers: streamHeaders,
+        });
+      }
 
       // Parse the response as JSON, text, or fallback to binary
       let response: unknown;

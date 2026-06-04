@@ -992,3 +992,253 @@ describe("nextProxyHandler — named-route trust does not leak through transform
     expect(String(spy.mock.calls[0][0])).toBe("https://api.example.com/v2");
   });
 });
+
+describe("nextProxyHandler — streaming passthrough", () => {
+  const realFetch = global.fetch;
+  // Each call returns a fresh native Response so the body stream is consumable
+  // once per request, with real headers and a real ReadableStream body.
+  function mockStream(bodyText: string, contentType: string, status = 200) {
+    const fn = jest.fn(
+      async () =>
+        new Response(bodyText, { status, headers: { "content-type": contentType } })
+    ) as unknown as typeof fetch;
+    global.fetch = fn;
+    return fn as unknown as jest.Mock;
+  }
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it("pipes the upstream body through and preserves status and content-type with stream:true", async () => {
+    mockStream("data: hello\n\ndata: world\n\n", "text/event-stream");
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: true,
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    expect(getStatus(res)).toBe(200);
+    expect(getHeader(res, "content-type")).toBe("text/event-stream");
+    const body = await getBody(res);
+    expect(String(body)).toContain("data: hello");
+    expect(String(body)).toContain("data: world");
+  });
+
+  it("does NOT apply transformResponse to a streamed body", async () => {
+    mockStream("data: tok\n\n", "text/event-stream");
+    let transformed = false;
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: true,
+      transformResponse: (r) => {
+        transformed = true;
+        return r;
+      },
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    const body = await getBody(res);
+    expect(String(body)).toContain("data: tok");
+    expect(transformed).toBe(false);
+  });
+
+  it("stream:'auto' streams when the upstream Content-Type is text/event-stream", async () => {
+    mockStream("data: auto\n\n", "text/event-stream");
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: "auto",
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    expect(getHeader(res, "content-type")).toBe("text/event-stream");
+    const body = await getBody(res);
+    expect(String(body)).toContain("data: auto");
+  });
+
+  it("stream:'auto' buffers a normal JSON response (no streaming)", async () => {
+    mockStream('{"id":7,"ok":true}', "application/json");
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: "auto",
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/data" },
+      })
+    );
+    const body = await getBody(res);
+    expect(body).toMatchObject({ id: 7, ok: true });
+  });
+
+  it("supports the function form to decide streaming per request", async () => {
+    mockStream("data: fn\n\n", "text/event-stream");
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: (req) => req.headers.get("x-stream") === "1",
+    });
+    const res = await handler(
+      createMockRequest({
+        headers: { "x-stream": "1" },
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    expect(getHeader(res, "content-type")).toBe("text/event-stream");
+    const body = await getBody(res);
+    expect(String(body)).toContain("data: fn");
+  });
+
+  it("preserves CORS grant headers on a streamed response", async () => {
+    mockStream("data: cors\n\n", "text/event-stream");
+    const handler = nextProxyHandler({
+      allowOrigins: ["https://app.com"],
+      allowedHosts: ["api.example.com"],
+      stream: true,
+    });
+    const res = await handler(
+      createMockRequest({
+        headers: { origin: "https://app.com" },
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    expect(getHeader(res, "Access-Control-Allow-Origin")).toBe("https://app.com");
+  });
+
+  it("emits a response log with payload '[stream]' for streamed bodies", async () => {
+    mockStream("data: log\n\n", "text/event-stream");
+    const logs: any[] = [];
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: true,
+      log: (info) => logs.push(info),
+    });
+    await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    const responseLog = logs.find((l) => l.type === "response");
+    expect(responseLog).toBeDefined();
+    expect(responseLog.payload).toBe("[stream]");
+    expect(responseLog.status).toBe(200);
+  });
+
+  // --- Security regression tests: streaming must never bypass a guard ---
+
+  it("runs guards before streaming: a failed auth with stream:true returns 401 and never fetches", async () => {
+    const fetchMock = mockStream("data: leak\n\n", "text/event-stream");
+    const handler = nextProxyHandler({
+      auth: () => false,
+      allowedHosts: ["api.example.com"],
+      stream: true,
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    expect(getStatus(res)).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks an SSRF attempt to an internal host with stream:true and never fetches", async () => {
+    const fetchMock = mockStream("data: leak\n\n", "text/event-stream");
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: true,
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "http://127.0.0.1/admin" },
+      })
+    );
+    expect(getStatus(res)).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("strips upstream Set-Cookie and arbitrary headers, and sets nosniff, on a streamed response", async () => {
+    global.fetch = jest.fn(
+      async () =>
+        new Response("data: x\n\n", {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "set-cookie": "session=secret; HttpOnly",
+            "x-internal-token": "leak-me",
+          },
+        })
+    ) as unknown as typeof fetch;
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: true,
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    expect(getHeader(res, "set-cookie")).toBeNull();
+    expect(getHeader(res, "x-internal-token")).toBeNull();
+    expect(getHeader(res, "x-content-type-options")).toBe("nosniff");
+    expect(getHeader(res, "x-accel-buffering")).toBe("no");
+  });
+
+  it("passes through a non-ok upstream status on a streamed body", async () => {
+    mockStream("data: upstream-error\n\n", "text/event-stream", 503);
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: true,
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/sse" },
+      })
+    );
+    expect(getStatus(res)).toBe(503);
+    const body = await getBody(res);
+    expect(String(body)).toContain("upstream-error");
+  });
+
+  it("stream:'auto' streams an application/octet-stream body", async () => {
+    mockStream("binary-stream-bytes", "application/octet-stream");
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: "auto",
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/blob" },
+      })
+    );
+    expect(getHeader(res, "content-type")).toBe("application/octet-stream");
+    expect(getHeader(res, "x-content-type-options")).toBe("nosniff");
+    const body = await getBody(res);
+    expect(String(body)).toContain("binary-stream-bytes");
+  });
+
+  it("stream:'auto' does not stream when a non-stream essence carries a stream-like charset", async () => {
+    mockStream('{"id":1,"ok":true}', 'text/html; charset="application/x-ndjson"');
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: "auto",
+    });
+    const res = await handler(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/data" },
+      })
+    );
+    // Buffered path (NextResponse.json) never sets nosniff; its presence would
+    // prove the body was wrongly streamed.
+    expect(getHeader(res, "x-content-type-options")).toBeNull();
+    const body = await getBody(res);
+    expect(body).toMatchObject({ id: 1, ok: true });
+  });
+});

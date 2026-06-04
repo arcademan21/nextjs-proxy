@@ -159,6 +159,43 @@ The exported `InMemoryRateLimitStore` class is the default backend; instantiate 
 
 ---
 
+## Streaming (SSE / LLM token streaming)
+
+By default the proxy buffers the upstream response and returns it as JSON. For Server-Sent Events, NDJSON, or LLM token streams you want the bytes to flow to the client as they arrive. Set `stream` to pipe the upstream body straight through, unbuffered.
+
+```ts
+// Always stream this route's responses (e.g. an LLM completion endpoint)
+export const POST = nextProxyHandler({
+  routes: { chat: "https://api.openai.com/v1/chat/completions" },
+  stream: true,
+});
+```
+
+> The upstream `Authorization` is taken from the incoming request's `Authorization` header (forwarded as a Bearer token). Keep provider secrets server-side with a `validate`/`transformRequest` hook or a fixed `route` as appropriate.
+
+`stream` accepts:
+
+- `true` — always pipe the body through.
+- `"auto"` — stream only when the upstream `Content-Type` is stream-like (`text/event-stream`, `application/x-ndjson`, `application/stream+json`, `application/octet-stream`); otherwise buffer normally.
+- `(req) => boolean | "auto"` — decide per request (e.g. based on a header).
+
+```ts
+// Stream only when the client asks for it
+nextProxyHandler({
+  allowedHosts: ["api.partner.com"],
+  stream: (req) => req.headers.get("accept") === "text/event-stream",
+});
+```
+
+**How streaming behaves:**
+
+- All guards (auth, CSRF, CORS, rate limit, `validate`, SSRF) run **before** the fetch, so streaming never bypasses your security checks.
+- Only `content-type` and `cache-control` are forwarded from the upstream. Every other upstream header (including `Set-Cookie`) is dropped. `X-Content-Type-Options: nosniff` is added, and `text/event-stream` also gets `X-Accel-Buffering: no` (so SSE survives buffering reverse proxies like nginx).
+- `transformResponse` is **not** applied to a streamed body (it would require buffering the whole thing). `monitor` is called without the response argument. `log` still fires a `response` event with `payload: "[stream]"`.
+- `timeoutMs` only guards **time-to-headers**. Once the stream starts there is no idle or total timeout — a slow upstream keeps the connection open up to your platform's function limit. Client disconnects rely on the runtime cancelling the upstream body.
+
+---
+
 ## Full options
 
 | Option | Type | Description |
@@ -174,6 +211,7 @@ The exported `InMemoryRateLimitStore` class is the default backend; instantiate 
 | `inMemoryRate` | `{ windowMs, max, key?, store? }` | Rate limiting. Pass `store` for a shared backend (Redis, etc.). |
 | `rateLimit` | `(req) => boolean \| Promise` | Custom external rate-limit hook. |
 | `timeoutMs` | `number` | Abort the upstream fetch after N ms (default `30000`; `0` disables). Times out with `504`. |
+| `stream` | `boolean \| "auto" \| (req)=>boolean\|"auto"` | Pipe the upstream body straight to the client without buffering — for SSE / LLM token streaming. See [Streaming](#streaming-sse--llm-token-streaming). |
 | `auth` / `csrf` / `validate` | `(req) => boolean \| Promise` | Pre-checks. Return `false` to reject (`401` / `403` / `401`). |
 | `transformRequest` | `({method,endpoint,data,route}) => {...}` | Modify the payload before fetching. |
 | `transformResponse` | `(res) => any` | Modify the response before returning (objects only). |

@@ -1,3 +1,27 @@
+# CHANGE.log 2026-06-04 (v2.2.0)
+
+- **Streaming passthrough (new `stream` option):** pipe the upstream body
+  straight to the client without buffering — for Server-Sent Events, NDJSON,
+  and LLM token streaming. Additive and fully backward compatible (unset/`false`
+  keeps the existing buffered JSON behavior).
+	- `stream: true` always pipes; `stream: "auto"` pipes only when the upstream
+	  `Content-Type` essence is stream-like (`text/event-stream`,
+	  `application/x-ndjson`, `application/stream+json`, `application/octet-stream`);
+	  `stream: (req) => boolean | "auto"` decides per request.
+	- Security: all guards (auth, CSRF, CORS, rate limit, `validate`, SSRF) run
+	  before the fetch, so streaming never bypasses them. Only `content-type` and
+	  `cache-control` are forwarded; every other upstream header (including
+	  `Set-Cookie`) is dropped. Adds `X-Content-Type-Options: nosniff`, and
+	  `X-Accel-Buffering: no` for `text/event-stream`.
+	- `transformResponse` is skipped for streamed bodies; `monitor` is called
+	  without the response; `log` fires a `response` event with `payload: "[stream]"`.
+	- `"auto"` matches the parsed MIME essence exactly (not a loose substring),
+	  so a stream-like charset on a non-stream type cannot trip the heuristic.
+	- `timeoutMs` only guards time-to-headers; an in-progress stream has no idle
+	  or total timeout (documented).
+	- Added 13 streaming tests including guard-before-stream, SSRF-block,
+	  header-stripping, and non-ok passthrough. `tsc` clean and 67/67 tests pass.
+
 # CHANGE.log 2026-06-04 (v2.1.1)
 
 - **Docs only (no runtime change):** documentation and language-consistency pass.
