@@ -4,6 +4,7 @@
   "description": "Universal, secure proxy for Next.js. Centralize, audit, and control all external API calls from a single entry point.",
   "author": "Haroldy Arturo Pérez Rodríguez <haroldyarturo@gmail.com>",
   "license": "MIT",
+  "packageManager": "pnpm@11.5.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/arcademan21/nextjs-proxy"
