@@ -26,9 +26,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Reads the pinned version from the "packageManager" field in package.json.
+      # Pin pnpm 9 explicitly: it supports Node 18/20/22, while pnpm 11 requires Node >=22.13.
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        with:
+          version: 9
 
       - name: Setup Node ${{ matrix.node }}
         uses: actions/setup-node@v4
