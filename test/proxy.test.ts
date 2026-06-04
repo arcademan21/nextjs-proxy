@@ -325,6 +325,37 @@ describe("nextProxyHandler", () => {
     expect(getStatus(res)).toBe(400);
   });
 
+  it("returns 504 when the upstream fetch exceeds timeoutMs", async () => {
+    const realFetch = global.fetch;
+    // A fetch that never resolves until its abort signal fires.
+    global.fetch = ((_url: any, init: any) =>
+      new Promise((_resolve, reject) => {
+        const signal: AbortSignal | undefined = init?.signal;
+        if (signal) {
+          signal.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        }
+      })) as unknown as typeof fetch;
+    try {
+      const handler = await nextProxyHandler({
+        allowedHosts: ["api.example.com"],
+        timeoutMs: 20,
+      });
+      const req = createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/slow" },
+      });
+      const res = await handler(req);
+      expect(getStatus(res)).toBe(504);
+      const body = await getBody(res);
+      expect(body.error).toMatch(/timed out/i);
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
   it("does not leak internal error details to the client on 500", async () => {
     const realFetch = global.fetch;
     global.fetch = (() => {

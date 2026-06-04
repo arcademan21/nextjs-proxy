@@ -76,6 +76,12 @@ export interface NextProxyOptions {
   /** Base URL for relative endpoints */
   baseUrl?: string;
   /**
+   * Abort the upstream fetch after this many milliseconds. Prevents a hung
+   * upstream from holding the (serverless) function open and burning time.
+   * Defaults to 30000 (30s). Set to `0` to disable the timeout.
+   */
+  timeoutMs?: number;
+  /**
    * Allowlist of upstream destination hosts for ABSOLUTE endpoints (SSRF protection).
    * - `string` / `string[]`: exact host, wildcard subdomain (`"*.example.com"`), or `"*"` for any public host
    * - function: `(url, req) => boolean` for custom logic
@@ -490,9 +496,21 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       }
       if (Object.keys(headers).length) fetchOptions.headers = headers;
 
-      // Proxy the request to the external endpoint
+      // Proxy the request to the external endpoint, guarded by a timeout so a
+      // hung upstream cannot hold the function open indefinitely.
+      const timeoutMs = options.timeoutMs ?? 30000;
+      const controller = timeoutMs > 0 ? new AbortController() : undefined;
+      const timer = controller
+        ? setTimeout(() => controller.abort(), timeoutMs)
+        : undefined;
+      if (controller) fetchOptions.signal = controller.signal;
       const started = Date.now();
-      const upstream = await fetch(endpoint as RequestInfo, fetchOptions);
+      let upstream: Response;
+      try {
+        upstream = await fetch(endpoint as RequestInfo, fetchOptions);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
       const durationMs = Date.now() - started;
 
       // Parse the response as JSON, text, or fallback to binary
@@ -554,6 +572,9 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
           : undefined,
       });
     } catch (error) {
+      const isTimeout =
+        error instanceof Error &&
+        (error.name === "AbortError" || error.name === "TimeoutError");
       // Log error event
       if (options.log)
         options.log({
@@ -564,11 +585,17 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
           method: req.method,
           origin,
           endpoint: undefined,
-          status: 500,
+          status: isTimeout ? 504 : 500,
           durationMs: undefined,
           payload: undefined,
           error: error,
         });
+      if (isTimeout) {
+        return NextResponse.json(
+          { error: "Upstream request timed out" },
+          { status: 504 }
+        );
+      }
       // Do not leak internal error details (messages, stack, upstream
       // internals) to the client. The full error is still delivered to the
       // `log` callback above for server-side observability.
