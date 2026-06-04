@@ -32,7 +32,6 @@ async function getBody(res: any): Promise<any> {
 }
 import { nextProxyHandler, InMemoryRateLimitStore } from "../src/proxy";
 import type {
-  NextProxyOptions,
   ProxyRequestPayload,
   ProxyResponsePayload,
   RateLimitStore,

@@ -300,7 +300,7 @@ function getClientIp(req: NextRequest): string {
   if (realIp) return realIp.trim();
   const xf = req.headers.get("x-forwarded-for");
   if (xf) return xf.split(",")[0].trim();
-  // @ts-ignore untyped internal access in Node runtime mode
+  // Untyped internal access in Node runtime mode (best-effort).
   const nodeReq = (
     req as unknown as { _req?: { socket?: { remoteAddress?: string } } }
   )?._req; // best effort
@@ -643,11 +643,11 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       } catch {
         /* ignore empty body */
       }
-      let { method, endpoint, data, route } = payload as {
+      const { route } = payload as { route?: unknown };
+      let { method, endpoint, data } = payload as {
         method?: unknown;
         endpoint?: unknown;
         data?: unknown;
-        route?: unknown;
       };
 
       // Named route resolution. When the client sends `{ route }`, resolve the
