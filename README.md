@@ -35,16 +35,33 @@ module.exports = {
 };
 ```
 
-### 2. Global Middleware (middleware.ts)
+### 2. Global Middleware / Proxy file
 
-> **Important:**
-> If your Next.js project uses the Pages Router (i.e., you have a `pages/` folder), the middleware file must be located at `src/middleware.ts` for Next.js to detect it correctly. If you use only the App Router, it can be in the project root or in `src/`.
+> **Next.js 16+ naming change:**
+> Next.js 16 renamed the special `middleware` file to `proxy`. Use the name
+> that matches your Next.js version:
+>
+> | Next.js version | File              | Exported function |
+> | --------------- | ----------------- | ----------------- |
+> | **16 and newer**| `proxy.ts`        | `export function proxy(...)` |
+> | **13 – 15**     | `middleware.ts`   | `export function middleware(...)` |
+>
+> On Next.js 16 the `proxy` file always runs on the **Node.js runtime** — the
+> `edge` runtime is **not** supported there. If you need the edge runtime, keep
+> using a `middleware.ts` file on a Next.js version that still supports it.
+> Config flags were also renamed (e.g. `skipMiddlewareUrlNormalize` →
+> `skipProxyUrlNormalize`).
 
-```js
-// src/middleware.ts
+> **Important (Pages Router):**
+> If your project uses the Pages Router (a `pages/` folder), the file must live
+> at `src/proxy.ts` (Next 16+) or `src/middleware.ts` (Next 13–15) for Next.js
+> to detect it. App Router projects can place it at the project root or in `src/`.
+
+```ts
+// Next.js 16+  ->  proxy.ts
 import { NextResponse, NextRequest } from "next/server";
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   // Example: global authentication
   const token = request.headers.get("authorization");
   if (!token) {
@@ -59,6 +76,28 @@ export const config = {
   matcher: ["/api/proxy/:path*"],
 };
 ```
+
+```ts
+// Next.js 13–15  ->  middleware.ts
+import { NextResponse, NextRequest } from "next/server";
+
+export function middleware(request: NextRequest) {
+  const token = request.headers.get("authorization");
+  if (!token) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/api/proxy/:path*"],
+};
+```
+
+> Note: `nextjs-proxy`'s handler (`nextProxyHandler`, section 3) is a route
+> handler factory and does **not** depend on the special middleware/proxy file.
+> This section only documents the optional global-gate pattern; the rename above
+> applies to that pattern, not to the package API.
 
 ### 3. Centralized Advanced Logic (Handler)
 
@@ -241,6 +280,7 @@ This pattern allows you to keep your API logic in the App Router (recommended fo
 | `baseUrl`           | `string`                            | Prefix for relative endpoints.                 |
 | `allowedHosts`      | `string \| string[] \| (url,req)=>boolean` | **SSRF allowlist** of upstream destination hosts for absolute endpoints. |
 | `allowPrivateHosts` | `boolean`                           | Allow internal/loopback/private hosts (default `false`). |
+| `timeoutMs`         | `number`                            | Abort the upstream fetch after N ms (default `30000`; `0` disables). Times out with `504`. |
 
 ## Security: SSRF protection (`allowedHosts`)
 

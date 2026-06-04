@@ -8,6 +8,15 @@
 - Las denegaciones devuelven `403 { error: "Endpoint not allowed" }`; el motivo detallado solo va al callback `log`, nunca al cliente.
 - Se corrige el campo `license` en `package.json` (`"Public"` → `"MIT"`), ahora coherente con el archivo LICENSE y las cabeceras del código.
 - Se añaden 10 tests que verifican el bloqueo de metadata cloud, loopback, rangos LAN privados y hosts fuera de la allowlist.
+- **Robustez y hardening adicionales (misma v2.0.0):**
+	- `transformRequest`: se corrige un fallo por el que un `method`/`endpoint` ausente se convertía en el string `"undefined"` (truthy) y evadía la validación, intentando proxiar a un endpoint inválido. Ahora se devuelve `400`.
+	- Fuga de información: el `500` ya no serializa el error interno al cliente (`{ error: "Internal proxy error" }`); el detalle completo solo va al callback `log`.
+	- Nueva opción `timeoutMs` (por defecto `30000`, `0` desactiva): aborta el fetch upstream con `AbortController`; los timeouts devuelven `504`.
+	- Rate limit in-memory: se purgan entradas expiradas (evita crecimiento ilimitado de memoria) y se documenta que es best-effort por instancia en serverless (usar `rateLimit` externo para límites globales).
+	- Resolución de IP: se prefiere `x-real-ip` sobre `x-forwarded-for` y se documenta que ambos son spoofeables (no son frontera de seguridad).
+	- `devDependencies`: se elimina `@types/next` (stub deprecado que arrastraba un `next` vulnerable por transitividad) y se fija `next@^15.5.19` + `react`/`react-dom` para el typecheck/test local.
+	- Suite de tests: el happy-path deja de depender de red real (se mockea `fetch`).
+- **Docs:** la sección de Middleware del README se alinea con Next.js 16 (renombrado de `middleware.ts` → `proxy.ts`, export `middleware` → `proxy`, caveat del runtime `edge`), manteniendo la guía para Next 13–15.
 
 # CHANGE.log 2025-09-16
 
