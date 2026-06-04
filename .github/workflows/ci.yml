@@ -75,3 +75,34 @@ jobs:
 
       - name: Build (ESM + CJS + d.ts)
         run: pnpm run build
+
+  compat:
+    name: compat (next ${{ matrix.next }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        next: [13, 14, 15]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Build + pack the real tarball, then type-check a throwaway App Router
+      # consumer against next@${{ matrix.next }}. Proves the published surface
+      # honors `peerDependencies: next >=13` instead of only asserting it.
+      - name: Compatibility smoke (next ${{ matrix.next }})
+        run: bash scripts/compat-smoke.sh ${{ matrix.next }}
