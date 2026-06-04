@@ -325,3 +325,153 @@ describe("nextProxyHandler", () => {
     expect(getStatus(res)).toBe(400);
   });
 });
+
+describe("nextProxyHandler — SSRF protection (allowedHosts)", () => {
+  const realFetch = global.fetch;
+
+  // Mock fetch so "allowed" cases never hit the network and we can assert calls.
+  function mockFetch() {
+    const fn = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+      text: async () => '{"ok":true}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })) as unknown as typeof fetch;
+    global.fetch = fn;
+    return fn as unknown as jest.Mock;
+  }
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it("blocks absolute endpoint to cloud metadata (169.254.169.254)", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ allowedHosts: ["api.example.com"] });
+    const req = createMockRequest({
+      body: {
+        method: "GET",
+        endpoint: "http://169.254.169.254/latest/meta-data/",
+      },
+    });
+    const res = await handler(req);
+    expect(getStatus(res)).toBe(403);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("blocks loopback hosts (localhost and 127.0.0.1)", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ allowedHosts: "*" });
+    for (const endpoint of [
+      "http://localhost:6379",
+      "http://127.0.0.1:8080/admin",
+    ]) {
+      const req = createMockRequest({ body: { method: "GET", endpoint } });
+      const res = await handler(req);
+      expect(getStatus(res)).toBe(403);
+    }
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("blocks private LAN ranges (10.x, 192.168.x, 172.16.x)", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ allowedHosts: "*" });
+    for (const endpoint of [
+      "http://10.0.0.5/internal",
+      "http://192.168.1.1/router",
+      "http://172.16.0.10/service",
+    ]) {
+      const req = createMockRequest({ body: { method: "GET", endpoint } });
+      const res = await handler(req);
+      expect(getStatus(res)).toBe(403);
+    }
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("blocks absolute endpoint whose host is not in allowedHosts", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ allowedHosts: ["api.example.com"] });
+    const req = createMockRequest({
+      body: { method: "GET", endpoint: "https://evil.com/steal" },
+    });
+    const res = await handler(req);
+    expect(getStatus(res)).toBe(403);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("rejects absolute endpoints when no allowedHosts is configured", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler();
+    const req = createMockRequest({
+      body: { method: "GET", endpoint: "https://api.example.com/data" },
+    });
+    const res = await handler(req);
+    expect(getStatus(res)).toBe(403);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("allows absolute endpoint whose host is in allowedHosts", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ allowedHosts: ["api.example.com"] });
+    const req = createMockRequest({
+      body: { method: "GET", endpoint: "https://api.example.com/data" },
+    });
+    const res = await handler(req);
+    expect(getStatus(res)).toBeLessThan(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const calledUrl = spy.mock.calls[0][0];
+    expect(String(calledUrl)).toBe("https://api.example.com/data");
+  });
+
+  it("supports wildcard subdomains and denies non-matching hosts", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ allowedHosts: "*.trusted.com" });
+    const allowed = createMockRequest({
+      body: { method: "GET", endpoint: "https://api.trusted.com/v1" },
+    });
+    expect(getStatus(await handler(allowed))).toBeLessThan(400);
+
+    const denied = createMockRequest({
+      body: { method: "GET", endpoint: "https://trusted.com.evil.io/x" },
+    });
+    expect(getStatus(await handler(denied))).toBe(403);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks private host even if explicitly allowlisted (no allowPrivateHosts)", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ allowedHosts: ["169.254.169.254"] });
+    const req = createMockRequest({
+      body: { method: "GET", endpoint: "http://169.254.169.254/latest/" },
+    });
+    expect(getStatus(await handler(req))).toBe(403);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("allows internal host only when allowPrivateHosts is explicitly enabled", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({
+      allowedHosts: ["127.0.0.1"],
+      allowPrivateHosts: true,
+    });
+    const req = createMockRequest({
+      body: { method: "GET", endpoint: "http://127.0.0.1:4000/health" },
+    });
+    expect(getStatus(await handler(req))).toBeLessThan(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("implicitly trusts the baseUrl host for relative endpoints", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({ baseUrl: "https://api.service.com" });
+    const req = createMockRequest({
+      body: { method: "GET", endpoint: "/v1/health" },
+    });
+    expect(getStatus(await handler(req))).toBeLessThan(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0][0])).toBe(
+      "https://api.service.com/v1/health"
+    );
+  });
+});

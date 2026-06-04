@@ -75,6 +75,20 @@ export interface NextProxyOptions {
   maskSensitiveData?: (data: unknown) => unknown;
   /** Base URL for relative endpoints */
   baseUrl?: string;
+  /**
+   * Allowlist of upstream destination hosts for ABSOLUTE endpoints (SSRF protection).
+   * - `string` / `string[]`: exact host, wildcard subdomain (`"*.example.com"`), or `"*"` for any public host
+   * - function: `(url, req) => boolean` for custom logic
+   * The host of `baseUrl` is always implicitly allowed.
+   * If omitted, absolute endpoints are rejected and only relative endpoints resolved via `baseUrl` are permitted.
+   */
+  allowedHosts?: string | string[] | ((url: URL, req: NextRequest) => boolean);
+  /**
+   * Allow requests to internal/private/loopback/link-local hosts
+   * (e.g. `127.0.0.1`, `169.254.169.254`, `10.x`, `192.168.x`, `*.localhost`).
+   * Disabled by default to prevent SSRF against cloud metadata and internal services.
+   */
+  allowPrivateHosts?: boolean;
   /** Custom response when origin is not allowed */
   onCorsDenied?: (origin: string) => unknown;
   /** In-memory rate limiter implementation */
@@ -128,6 +142,111 @@ function getClientIp(req: NextRequest): string {
     req as unknown as { _req?: { socket?: { remoteAddress?: string } } }
   )?._req; // best effort
   return nodeReq?.socket?.remoteAddress || "anon";
+}
+
+/**
+ * Detect internal/private/loopback/link-local hosts. These are blocked by default
+ * to prevent SSRF against cloud metadata (169.254.169.254), localhost and LAN ranges.
+ * @param hostname The URL hostname (may include IPv6 brackets)
+ */
+function isInternalHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  if (!h) return true;
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h === "metadata.google.internal") return true;
+  // IPv6 loopback / unspecified / unique-local (fc00::/7) / link-local (fe80::/10)
+  if (h === "::1" || h === "::") return true;
+  if (/^f[cd][0-9a-f]*:/.test(h)) return true;
+  if (/^fe[89ab][0-9a-f]*:/.test(h)) return true;
+  // IPv4 (also IPv4-mapped IPv6 like ::ffff:127.0.0.1)
+  const mapped = h.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  const ip = mapped ? mapped[1] : h;
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const oct = m.slice(1).map((n) => Number(n));
+    if (oct.some((n) => n > 255)) return false;
+    const [a, b] = oct;
+    if (a === 0 || a === 127) return true; // this-host / loopback
+    if (a === 10) return true; // private
+    if (a === 192 && b === 168) return true; // private
+    if (a === 172 && b >= 16 && b <= 31) return true; // private
+    if (a === 169 && b === 254) return true; // link-local incl. cloud metadata
+  }
+  return false;
+}
+
+/** Extract the hostname from a URL string, or undefined if it cannot be parsed. */
+function hostOf(value: string): string | undefined {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Match a host against a pattern: exact, `"*"` (any), or `"*.suffix"` wildcard subdomain. */
+function matchHostPattern(pattern: string, hostname: string): boolean {
+  const p = pattern.toLowerCase().trim();
+  const h = hostname.toLowerCase();
+  if (p === "*") return true;
+  if (p === h) return true;
+  if (p.startsWith("*.")) {
+    const suffix = p.slice(1); // ".example.com"
+    return h.endsWith(suffix) && h.length > suffix.length;
+  }
+  return false;
+}
+
+/**
+ * SSRF guard. Decide whether the resolved upstream URL may be fetched.
+ * Secure by default: internal hosts are blocked (unless `allowPrivateHosts`),
+ * and absolute hosts must match `baseUrl`'s host, `allowedHosts`, or be approved
+ * by the `allowedHosts` function. Returns a reason for logging when denied.
+ */
+function isUpstreamAllowed(
+  rawUrl: string,
+  req: NextRequest,
+  options: NextProxyOptions
+): { ok: boolean; reason?: string } {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return { ok: false, reason: "Invalid endpoint URL" };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { ok: false, reason: "Unsupported protocol" };
+  }
+  const host = url.hostname;
+
+  if (!options.allowPrivateHosts && isInternalHost(host)) {
+    return { ok: false, reason: "Blocked internal/private host" };
+  }
+
+  // The host of baseUrl is implicitly trusted (relative endpoints resolve here).
+  const baseHost = options.baseUrl ? hostOf(options.baseUrl) : undefined;
+  if (baseHost && host.toLowerCase() === baseHost.toLowerCase()) {
+    return { ok: true };
+  }
+
+  const allow = options.allowedHosts;
+  if (allow === undefined || allow === null) {
+    return {
+      ok: false,
+      reason: baseHost
+        ? "Absolute endpoint host not allowed (only baseUrl host is permitted)"
+        : "No allowedHosts configured for absolute endpoints",
+    };
+  }
+  if (typeof allow === "function") {
+    return allow(url, req)
+      ? { ok: true }
+      : { ok: false, reason: "Host denied by allowedHosts function" };
+  }
+  const list = Array.isArray(allow) ? allow : [allow];
+  return list.some((p) => matchHostPattern(p, host))
+    ? { ok: true }
+    : { ok: false, reason: "Host not in allowedHosts" };
 }
 
 /**
@@ -316,6 +435,29 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
           options.baseUrl.replace(/\/$/, "") +
           "/" +
           String(endpoint).replace(/^\//, "");
+      }
+
+      // SSRF guard: validate the final upstream host before issuing the fetch.
+      const upstreamCheck = isUpstreamAllowed(String(endpoint), req, options);
+      if (!upstreamCheck.ok) {
+        if (options.log)
+          options.log({
+            type: "error",
+            level: "error",
+            timestamp: new Date().toISOString(),
+            ip: getClientIp(req),
+            method: String(method),
+            origin,
+            endpoint: String(endpoint),
+            status: 403,
+            durationMs: undefined,
+            payload: undefined,
+            error: `Endpoint not allowed: ${upstreamCheck.reason}`,
+          });
+        return NextResponse.json(
+          { error: "Endpoint not allowed" },
+          { status: 403 }
+        );
       }
 
       // Sanitización de datos si está configurado

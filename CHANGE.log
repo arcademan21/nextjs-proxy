@@ -1,3 +1,14 @@
+# CHANGE.log 2026-06-04 (v2.0.0)
+
+- **Seguridad (SSRF):** se añade protección contra Server-Side Request Forgery.
+	- Nueva opción `allowedHosts` (`string | string[] | (url, req) => boolean`): allowlist de hosts de destino para endpoints absolutos. Soporta host exacto, comodín de subdominio (`*.example.com`) y `*`.
+	- Nueva opción `allowPrivateHosts` (por defecto `false`): bloquea hosts internos/loopback/privados (`127.0.0.1`, `localhost`, `169.254.169.254`/metadata cloud, `10/8`, `172.16/12`, `192.168/16` y equivalentes IPv6).
+	- El host de `baseUrl` se considera de confianza implícita para endpoints relativos.
+	- **BREAKING:** los endpoints absolutos ahora se rechazan (`403`) salvo que su host esté en `allowedHosts` o coincida con `baseUrl`.
+- Las denegaciones devuelven `403 { error: "Endpoint not allowed" }`; el motivo detallado solo va al callback `log`, nunca al cliente.
+- Se corrige el campo `license` en `package.json` (`"Public"` → `"MIT"`), ahora coherente con el archivo LICENSE y las cabeceras del código.
+- Se añaden 10 tests que verifican el bloqueo de metadata cloud, loopback, rangos LAN privados y hosts fuera de la allowlist.
+
 # CHANGE.log 2025-09-16
 
 - Se agregan dos versiones de `nextProxyHandler`:

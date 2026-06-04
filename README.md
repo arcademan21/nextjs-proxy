@@ -239,6 +239,30 @@ This pattern allows you to keep your API logic in the App Router (recommended fo
 | `onCorsDenied`      | `(origin) => any`                   | Custom response for denied CORS.               |
 | `maskSensitiveData` | `(data) => any`                     | Sanitizes data before sending.                 |
 | `baseUrl`           | `string`                            | Prefix for relative endpoints.                 |
+| `allowedHosts`      | `string \| string[] \| (url,req)=>boolean` | **SSRF allowlist** of upstream destination hosts for absolute endpoints. |
+| `allowPrivateHosts` | `boolean`                           | Allow internal/loopback/private hosts (default `false`). |
+
+## Security: SSRF protection (`allowedHosts`)
+
+Because clients send the target `endpoint` in the request body, an unrestricted proxy is a **Server-Side Request Forgery (SSRF)** vector: a client could ask the server to fetch internal services or the cloud metadata endpoint (`http://169.254.169.254/...`). `nextjs-proxy` is **secure by default**:
+
+- **Internal hosts are always blocked** (loopback `127.0.0.1`/`localhost`, link-local `169.254.0.0/16` incl. cloud metadata, and private ranges `10/8`, `172.16/12`, `192.168/16`, plus their IPv6 equivalents). Override only with `allowPrivateHosts: true`.
+- **Absolute endpoints must be allowlisted.** If `allowedHosts` is omitted, only relative endpoints resolved through `baseUrl` are permitted (the `baseUrl` host is implicitly trusted).
+
+```ts
+export const POST = nextProxyHandler({
+  baseUrl: "https://api.my-service.com", // its host is implicitly allowed
+  allowedHosts: [
+    "api.partner.com", // exact host
+    "*.internal-cdn.com", // wildcard subdomain
+  ],
+  // allowPrivateHosts: true, // ONLY for trusted internal proxies — disabled by default
+});
+```
+
+`allowedHosts` accepts a `string`, `string[]`, or a function `(url: URL, req: NextRequest) => boolean` for custom logic. Denied requests return `403 { error: "Endpoint not allowed" }`; the detailed reason is sent to your `log` callback, never to the client.
+
+> ⚠️ **Breaking change in v2.0.0:** absolute endpoints are now rejected unless their host is in `allowedHosts` (or matches `baseUrl`). If you previously relied on forwarding arbitrary absolute URLs, add the destination hosts to `allowedHosts`.
 
 ## CORS and Preflight
 
