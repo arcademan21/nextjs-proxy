@@ -16,7 +16,9 @@
 	- Resolución de IP: se prefiere `x-real-ip` sobre `x-forwarded-for` y se documenta que ambos son spoofeables (no son frontera de seguridad).
 	- `devDependencies`: se elimina `@types/next` (stub deprecado que arrastraba un `next` vulnerable por transitividad) y se fija `next@^15.5.19` + `react`/`react-dom` para el typecheck/test local.
 	- Suite de tests: el happy-path deja de depender de red real (se mockea `fetch`).
-- **Docs:** la sección de Middleware del README se alinea con Next.js 16 (renombrado de `middleware.ts` → `proxy.ts`, export `middleware` → `proxy`, caveat del runtime `edge`), manteniendo la guía para Next 13–15.
+	- **CORS:** un preflight `OPTIONS` denegado ya no refleja `Access-Control-Allow-Origin` del origin denegado; ahora devuelve un `403` limpio sin cabeceras `Access-Control-Allow-*` (antes afirmaba el origin denegado, anulando la comprobación CORS en el navegador).
+	- **BREAKING:** se elimina `nextProxyHandlerAsync` (era un wrapper YAGNI que solo devolvía `nextProxyHandler(options)` en una promesa). Usa `nextProxyHandler` directamente; si necesitas inicialización async, construye las opciones con `await` y pásalas al handler.
+- **Docs:** la sección de Middleware del README se alinea con Next.js 16 (renombrado de `middleware.ts` → `proxy.ts`, export `middleware` → `proxy`, caveat del runtime `edge`), manteniendo la guía para Next 13–15. Se aclara que las API routes de Pages Router (`pages/api/*`) **no** están soportadas (el handler usa la Web Fetch API, incompatible con `NextApiRequest`/`NextApiResponse`); usa un route handler de App Router.
 
 # CHANGE.log 2025-09-16
 

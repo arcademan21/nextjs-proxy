@@ -103,22 +103,21 @@ export const config = {
 
 ```ts
 // app/api/proxy/route.ts
-import { nextProxyHandler, nextProxyHandlerAsync } from "nextjs-proxy";
+import { nextProxyHandler } from "nextjs-proxy";
 
-// Versión síncrona (recomendada para la mayoría de casos)
 export const POST = nextProxyHandler({
-  // ...todas tus opciones avanzadas (logging, transform, masking, etc.)
+  // ...all your advanced options (logging, transform, masking, etc.)
 });
-
-// Versión asíncrona (si necesitas inicialización async)
-const handlerPromise = nextProxyHandlerAsync({
-  /* opciones */
-});
-export async function POST(req) {
-  const handler = await handlerPromise;
-  return handler(req);
-}
 ```
+
+> Need async initialization before handling requests? Build the options
+> yourself and pass them in — `nextProxyHandler` already returns the async
+> route handler:
+>
+> ```ts
+> const options = await loadProxyOptions();
+> export const POST = nextProxyHandler(options);
+> ```
 
 ---
 

@@ -634,11 +634,5 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
   };
 }
 
-// Versión asíncrona: útil si necesitas inicialización async
-export async function nextProxyHandlerAsync(options: NextProxyOptions = {}) {
-  // Puedes agregar lógica async aquí si lo necesitas
-  return nextProxyHandler(options);
-}
-
 // Default export for convenience
 export default nextProxyHandler;
