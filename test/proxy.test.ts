@@ -238,6 +238,8 @@ describe("nextProxyHandler", () => {
     });
     const res = await handler(req);
     expect(getStatus(res)).toBe(403);
+    // A denied preflight must NOT grant CORS to the denied origin.
+    expect(getHeader(res, "Access-Control-Allow-Origin")).toBeNull();
   });
 
   it("should apply in-memory rate limiting", async () => {

@@ -362,18 +362,12 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         const denied = options.onCorsDenied?.(origin) || {
           error: "Origin not allowed",
         };
+        // Do NOT echo Access-Control-Allow-* headers on a denied preflight:
+        // reflecting the denied origin would tell the browser it is allowed,
+        // defeating the CORS check. Return a clean 403 with no CORS grant.
         return new NextResponse(JSON.stringify(denied), {
           status: 403,
-          headers: {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Headers": (
-              options.corsHeaders ?? ["Content-Type", "Authorization"]
-            ).join(", "),
-            "Access-Control-Allow-Methods": (
-              options.corsMethods ?? ["POST", "OPTIONS"]
-            ).join(","),
-          },
+          headers: { "Content-Type": "application/json" },
         });
       }
       return new NextResponse(null, {
