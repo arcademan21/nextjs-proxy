@@ -1,4 +1,4 @@
-// Interfaz para logging detallado
+// Interface for detailed logging
 export type LogLevel = "info" | "debug" | "error";
 export interface LogInfo {
   type: "request" | "response" | "error";
@@ -13,7 +13,7 @@ export interface LogInfo {
   payload?: unknown;
   error?: unknown;
 }
-// Tipos para transformación segura de request y response
+// Types for safe request/response transformation
 export interface ProxyRequestPayload {
   method: string;
   endpoint: string;
@@ -44,13 +44,13 @@ const WITHOUT_BODY = ["GET", "HEAD"];
 
 // Options for the proxy handler
 export interface NextProxyOptions {
-  /** Validación de autenticación */
+  /** Authentication validation */
   auth?: (req: NextRequest) => boolean | Promise<boolean>;
-  /** Sanitización de datos antes de enviar */
+  /** Sanitize data before sending */
   sanitize?: (data: unknown) => unknown;
-  /** Protección contra CSRF/XSS */
+  /** CSRF/XSS protection */
   csrf?: (req: NextRequest) => boolean | Promise<boolean>;
-  /** Monitoreo de actividad sospechosa */
+  /** Suspicious-activity monitoring */
   monitor?: (req: NextRequest, res?: unknown) => void;
   /** Logging callback for request/response/error events */
   log?: (info: LogInfo) => void;
@@ -64,18 +64,18 @@ export interface NextProxyOptions {
   transformResponse?: (res: ProxyResponsePayload) => ProxyResponsePayload;
   /** External rate limiting (true = allowed) */
   rateLimit?: (req: NextRequest) => Promise<boolean> | boolean;
-  /** Allowed origins for CORS. Puede ser:
-   * - string: '*' para todos, o un origen específico
-   * - string[]: lista de orígenes permitidos
-   * - función: (origin, req) => boolean para lógica personalizada
+  /** Allowed origins for CORS. Can be:
+   * - string: '*' for all, or a specific origin
+   * - string[]: list of allowed origins
+   * - function: (origin, req) => boolean for custom logic
    */
   allowOrigins?:
     | string
     | string[]
     | ((origin: string, req: NextRequest) => boolean);
-  /** Métodos permitidos para CORS (por defecto POST,OPTIONS) */
+  /** Allowed CORS methods (default POST,OPTIONS) */
   corsMethods?: string[];
-  /** Encabezados permitidos para CORS (por defecto Content-Type, Authorization) */
+  /** Allowed CORS headers (default Content-Type, Authorization) */
   corsHeaders?: string[];
   /**
    * Emit `Access-Control-Allow-Credentials: true` so browsers send cookies and
@@ -258,7 +258,7 @@ function getClientIp(req: NextRequest): string {
   if (realIp) return realIp.trim();
   const xf = req.headers.get("x-forwarded-for");
   if (xf) return xf.split(",")[0].trim();
-  // @ts-ignore acceso interno no tipado en modo Node runtime
+  // @ts-ignore untyped internal access in Node runtime mode
   const nodeReq = (
     req as unknown as { _req?: { socket?: { remoteAddress?: string } } }
   )?._req; // best effort
@@ -423,7 +423,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       );
     }
   }
-  // Helper para validar origen
+  // Helper to validate the origin
   function isOriginAllowed(origin: string, req: NextRequest): boolean {
     if (!options.allowOrigins) return true;
     if (typeof options.allowOrigins === "string") {
@@ -459,7 +459,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
   return async function handler(req: NextRequest) {
     const origin = req.headers.get("origin") || "";
 
-    // Validación de autenticación
+    // Authentication validation
     if (options.auth && !(await options.auth(req))) {
       if (options.log)
         options.log({
@@ -481,7 +481,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       );
     }
 
-    // Protección CSRF/XSS
+    // CSRF/XSS protection
     if (options.csrf && !(await options.csrf(req))) {
       if (options.log)
         options.log({
@@ -679,11 +679,11 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         );
       }
 
-      // Sanitización de datos si está configurado
+      // Sanitize data if configured
       if (options.sanitize) {
         data = options.sanitize(data);
       }
-      // Mask sensitive data if configurado
+      // Mask sensitive data if configured
       if (options.maskSensitiveData) {
         data = options.maskSensitiveData(data);
       }
@@ -736,7 +736,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         }
       }
 
-      // Transform the response si está configurado y es objeto
+      // Transform the response if configured and it is an object
       if (
         options.transformResponse &&
         typeof response === "object" &&
@@ -758,7 +758,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
           durationMs,
           payload: response,
         });
-      // Monitoreo de actividad sospechosa
+      // Suspicious-activity monitoring
       if (options.monitor) {
         options.monitor(req, response);
       }

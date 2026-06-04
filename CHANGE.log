@@ -1,69 +1,69 @@
 # CHANGE.log 2026-06-04 (v2.1.0)
 
-- **Named routes (mayor protección SSRF):** nueva opción `routes`
-  (`Record<string,string> | (name, req) => string | undefined`). El cliente
-  envía `{ route: "name" }` en vez de una URL y el servidor resuelve el destino,
-  por lo que el cliente deja de controlar a dónde va la petición (elimina el SSRF
-  dirigido por cliente en ese modo, la forma recomendada de usar el proxy).
-	- Las rutas resueltas son destinos de confianza definidos en el servidor:
-	  saltan `allowedHosts` pero siguen respetando la comprobación de protocolo
-	  `http`/`https` y de host interno (`allowPrivateHosts`) como defensa en
-	  profundidad.
-	- Una `route` desconocida devuelve `400 { error: "Unknown route" }` sin
-	  revelar qué nombres existen; las claves heredadas (p. ej. `constructor`) no
-	  se resuelven. Cualquier `endpoint` enviado junto a una `route` válida se
-	  ignora.
-- **Rate limit con store pluggable:** nueva interfaz `RateLimitStore`
-  (`increment(key, windowMs) => { count, resetAt }`) y opción `inMemoryRate.store`
-  para respaldar el límite con un backend compartido (p. ej. Redis) y que sea
-  global entre instancias/serverless, no best-effort por instancia. El store por
-  defecto in-memory se exporta como clase `InMemoryRateLimitStore`.
-- **CORS con credenciales (opt-in):** nueva opción `corsCredentials` que emite
-  `Access-Control-Allow-Credentials: true` en el preflight y la respuesta. El
-  proxy siempre refleja el origin específico (nunca `*`), por lo que el CORS con
-  credenciales es spec-compliant. Las cabeceras CORS se centralizan en un único
-  helper interno.
-	- **Endurecido:** `nextProxyHandler` lanza un error en construcción si
-	  `corsCredentials` se combina con `allowOrigins` comodín (`"*"`) o ausente,
-	  ya que reflejar el origin con credenciales se concedería a cualquier origin
-	  (fuga de respuesta credentialed). Exige una allowlist explícita.
-	- **Endurecido:** si un `transformRequest` reescribe el `endpoint`, se
-	  descarta la confianza de la named route y la URL resultante se vuelve a
-	  validar contra `allowedHosts` (no se hereda la confianza de la ruta).
-- **Tests:** se añade cobertura para named routes, store de rate-limit
-  pluggable/asíncrono, instancias aisladas de `InMemoryRateLimitStore`, CORS con
-  credenciales, `transformResponse` no aplicado a cuerpos no-objeto (texto) y
-  reescritura de `endpoint` vía `transformRequest`. Se añaden además tests del
-  guard de credenciales+comodín y de la pérdida de confianza de ruta al
-  reescribir el endpoint. Total 54 tests en verde.
-- **Compatibilidad:** todos los cambios son aditivos; no se rompe ninguna firma
-  existente.
+- **Named routes (stronger SSRF protection):** new `routes` option
+  (`Record<string,string> | (name, req) => string | undefined`). The client
+  sends `{ route: "name" }` instead of a URL and the server resolves the
+  destination, so the client no longer controls where the request goes
+  (eliminates client-driven SSRF in this mode — the recommended way to use the
+  proxy).
+	- Resolved routes are server-defined trusted destinations: they bypass
+	  `allowedHosts` but still respect the `http`/`https` protocol check and the
+	  internal-host check (`allowPrivateHosts`) as defense in depth.
+	- An unknown `route` returns `400 { error: "Unknown route" }` without
+	  disclosing which names exist; inherited keys (e.g. `constructor`) are not
+	  resolved. Any `endpoint` sent alongside a valid `route` is ignored.
+- **Pluggable rate-limit store:** new `RateLimitStore` interface
+  (`increment(key, windowMs) => { count, resetAt }`) and `inMemoryRate.store`
+  option to back the limit with a shared backend (e.g. Redis) so it holds
+  globally across instances/serverless instead of being per-instance
+  best-effort. The default in-memory store is exported as the
+  `InMemoryRateLimitStore` class.
+- **CORS with credentials (opt-in):** new `corsCredentials` option that emits
+  `Access-Control-Allow-Credentials: true` on the preflight and the response.
+  The proxy always reflects the specific origin (never `*`), so credentialed
+  CORS stays spec-compliant. CORS headers are centralized in a single internal
+  helper.
+	- **Hardened:** `nextProxyHandler` throws at construction if
+	  `corsCredentials` is combined with a wildcard (`"*"`) or unset
+	  `allowOrigins`, since reflecting the origin with credentials would grant it
+	  to any origin (credentialed-response leak). An explicit allowlist is
+	  required.
+	- **Hardened:** if a `transformRequest` rewrites the `endpoint`, the named
+	  route's trust is dropped and the resulting URL is re-validated against
+	  `allowedHosts` (route trust is not inherited).
+- **Tests:** added coverage for named routes, pluggable/async rate-limit store,
+  isolated `InMemoryRateLimitStore` instances, CORS with credentials,
+  `transformResponse` not applied to non-object bodies (text), and `endpoint`
+  rewriting via `transformRequest`. Also added tests for the
+  credentials+wildcard guard and for route-trust loss when the endpoint is
+  rewritten. 54 tests passing.
+- **Compatibility:** all changes are additive; no existing signature is broken.
 
 # CHANGE.log 2026-06-04 (v2.0.0)
 
-- **Seguridad (SSRF):** se añade protección contra Server-Side Request Forgery.
-	- Nueva opción `allowedHosts` (`string | string[] | (url, req) => boolean`): allowlist de hosts de destino para endpoints absolutos. Soporta host exacto, comodín de subdominio (`*.example.com`) y `*`.
-	- Nueva opción `allowPrivateHosts` (por defecto `false`): bloquea hosts internos/loopback/privados (`127.0.0.1`, `localhost`, `169.254.169.254`/metadata cloud, `10/8`, `172.16/12`, `192.168/16` y equivalentes IPv6).
-	- El host de `baseUrl` se considera de confianza implícita para endpoints relativos.
-	- **BREAKING:** los endpoints absolutos ahora se rechazan (`403`) salvo que su host esté en `allowedHosts` o coincida con `baseUrl`.
-- Las denegaciones devuelven `403 { error: "Endpoint not allowed" }`; el motivo detallado solo va al callback `log`, nunca al cliente.
-- Se corrige el campo `license` en `package.json` (`"Public"` → `"MIT"`), ahora coherente con el archivo LICENSE y las cabeceras del código.
-- Se añaden 10 tests que verifican el bloqueo de metadata cloud, loopback, rangos LAN privados y hosts fuera de la allowlist.
-- **Robustez y hardening adicionales (misma v2.0.0):**
-	- `transformRequest`: se corrige un fallo por el que un `method`/`endpoint` ausente se convertía en el string `"undefined"` (truthy) y evadía la validación, intentando proxiar a un endpoint inválido. Ahora se devuelve `400`.
-	- Fuga de información: el `500` ya no serializa el error interno al cliente (`{ error: "Internal proxy error" }`); el detalle completo solo va al callback `log`.
-	- Nueva opción `timeoutMs` (por defecto `30000`, `0` desactiva): aborta el fetch upstream con `AbortController`; los timeouts devuelven `504`.
-	- Rate limit in-memory: se purgan entradas expiradas (evita crecimiento ilimitado de memoria) y se documenta que es best-effort por instancia en serverless (usar `rateLimit` externo para límites globales).
-	- Resolución de IP: se prefiere `x-real-ip` sobre `x-forwarded-for` y se documenta que ambos son spoofeables (no son frontera de seguridad).
-	- `devDependencies`: se elimina `@types/next` (stub deprecado que arrastraba un `next` vulnerable por transitividad) y se fija `next@^15.5.19` + `react`/`react-dom` para el typecheck/test local.
-	- Suite de tests: el happy-path deja de depender de red real (se mockea `fetch`).
-	- **CORS:** un preflight `OPTIONS` denegado ya no refleja `Access-Control-Allow-Origin` del origin denegado; ahora devuelve un `403` limpio sin cabeceras `Access-Control-Allow-*` (antes afirmaba el origin denegado, anulando la comprobación CORS en el navegador).
-	- **BREAKING:** se elimina `nextProxyHandlerAsync` (era un wrapper YAGNI que solo devolvía `nextProxyHandler(options)` en una promesa). Usa `nextProxyHandler` directamente; si necesitas inicialización async, construye las opciones con `await` y pásalas al handler.
-- **Docs:** la sección de Middleware del README se alinea con Next.js 16 (renombrado de `middleware.ts` → `proxy.ts`, export `middleware` → `proxy`, caveat del runtime `edge`), manteniendo la guía para Next 13–15. Se aclara que las API routes de Pages Router (`pages/api/*`) **no** están soportadas (el handler usa la Web Fetch API, incompatible con `NextApiRequest`/`NextApiResponse`); usa un route handler de App Router.
+- **Security (SSRF):** added Server-Side Request Forgery protection.
+	- New `allowedHosts` option (`string | string[] | (url, req) => boolean`): allowlist of destination hosts for absolute endpoints. Supports exact host, subdomain wildcard (`*.example.com`), and `*`.
+	- New `allowPrivateHosts` option (default `false`): blocks internal/loopback/private hosts (`127.0.0.1`, `localhost`, `169.254.169.254`/cloud metadata, `10/8`, `172.16/12`, `192.168/16`, and their IPv6 equivalents).
+	- The host of `baseUrl` is implicitly trusted for relative endpoints.
+	- **BREAKING:** absolute endpoints are now rejected (`403`) unless their host is in `allowedHosts` or matches `baseUrl`.
+- Denials return `403 { error: "Endpoint not allowed" }`; the detailed reason goes only to the `log` callback, never to the client.
+- Fixed the `license` field in `package.json` (`"Public"` → `"MIT"`), now consistent with the LICENSE file and the code headers.
+- Added 10 tests verifying blocking of cloud metadata, loopback, private LAN ranges, and hosts outside the allowlist.
+- **Additional robustness and hardening (same v2.0.0):**
+	- `transformRequest`: fixed a bug where a missing `method`/`endpoint` became the string `"undefined"` (truthy) and slipped past validation, attempting to proxy to an invalid endpoint. It now returns `400`.
+	- Information leak: the `500` no longer serializes the internal error to the client (`{ error: "Internal proxy error" }`); the full detail goes only to the `log` callback.
+	- New `timeoutMs` option (default `30000`, `0` disables): aborts the upstream fetch with `AbortController`; timeouts return `504`.
+	- In-memory rate limit: expired entries are purged (prevents unbounded memory growth) and it is documented as per-instance best-effort on serverless (use an external `rateLimit` for global limits).
+	- IP resolution: prefers `x-real-ip` over `x-forwarded-for` and documents that both are spoofable (not a security boundary).
+	- `devDependencies`: removed `@types/next` (a deprecated stub that transitively pulled a vulnerable `next`) and pinned `next@^15.5.19` + `react`/`react-dom` for local typecheck/tests.
+	- Test suite: the happy path no longer depends on real network (mocks `fetch`).
+	- **CORS:** a denied `OPTIONS` preflight no longer reflects `Access-Control-Allow-Origin` for the denied origin; it now returns a clean `403` with no `Access-Control-Allow-*` headers (it previously asserted the denied origin, defeating the browser's CORS check).
+	- **BREAKING:** removed `nextProxyHandlerAsync` (a YAGNI wrapper that just returned `nextProxyHandler(options)` in a promise). Use `nextProxyHandler` directly; if you need async initialization, build the options with `await` and pass them to the handler.
+- **Docs:** the README Middleware section is aligned with Next.js 16 (rename of `middleware.ts` → `proxy.ts`, export `middleware` → `proxy`, `edge` runtime caveat), keeping the guidance for Next 13–15. Clarified that Pages Router API routes (`pages/api/*`) are **not** supported (the handler uses the Web Fetch API, incompatible with `NextApiRequest`/`NextApiResponse`); use an App Router route handler.
 
 # CHANGE.log 2025-09-16
 
-- Se agregan dos versiones de `nextProxyHandler`:
-	- Síncrona: integración directa y simple (`export const POST = nextProxyHandler(...)`).
-	- Asíncrona: para inicialización avanzada (`nextProxyHandlerAsync`).
-- Se actualiza la documentación para reflejar ambas opciones.
+- Added two versions of `nextProxyHandler`:
+	- Synchronous: direct and simple integration (`export const POST = nextProxyHandler(...)`).
+	- Asynchronous: for advanced initialization (`nextProxyHandlerAsync`).
+- Updated the documentation to reflect both options.
