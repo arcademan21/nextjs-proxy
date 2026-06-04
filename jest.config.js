@@ -8,6 +8,6 @@ module.exports = {
       tsconfig: "tsconfig.json",
     },
   },
-  // Opcional: Ignora el directorio dist y node_modules
+  // Optional: ignore the dist directory and node_modules
   testPathIgnorePatterns: ["/node_modules/", "/dist/"],
 };

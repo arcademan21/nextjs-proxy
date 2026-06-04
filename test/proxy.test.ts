@@ -38,7 +38,7 @@ import type {
   RateLimitStore,
   RateLimitHit,
 } from "../src/proxy";
-// Definición local mínima de NextRequest para pruebas, igual que en proxy.ts
+// Minimal local definition of NextRequest for tests, same as in proxy.ts
 type NextRequest = {
   method: string;
   headers: Headers;
@@ -277,7 +277,7 @@ describe("nextProxyHandler", () => {
       body: { method: "GET", endpoint: "/todos/1" },
     });
     await handler(req);
-    // Validar campos clave en los logs
+    // Validate key fields in the logs
     const requestLog = logs.find((l) => l.type === "request");
     const responseLog = logs.find((l) => l.type === "response");
     expect(requestLog).toBeDefined();
