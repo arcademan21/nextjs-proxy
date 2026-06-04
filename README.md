@@ -3,12 +3,13 @@
 Universal, secure proxy for Next.js. Centralize, audit, and control all external API calls from a single entry point, with support for:
 
 - Security (hides credentials and backend logic)
-- Configurable CORS
+- Configurable CORS (with opt-in credentials)
 - Centralized outbound traffic
 - Structured auditing and logging
 - Request/response transformation
 - Access control and validation
-- Rate limiting (custom and in-memory included)
+- Rate limiting (custom, in-memory, and pluggable shared stores)
+- SSRF protection with `allowedHosts` and server-side **named routes**
 - Support for relative endpoints via `baseUrl`
 
 Ideal for projects with multiple external integrations or governance requirements over outbound traffic.
@@ -278,11 +279,13 @@ This pattern allows you to keep your API logic in the App Router (recommended fo
 | `transformRequest`  | `({method,endpoint,data}) => {...}` | Modifies payload before fetch.                 |
 | `transformResponse` | `(res) => any`                      | Adjusts the response before sending to client. |
 | `rateLimit`         | `(req) => boolean \| Promise`       | Custom external rate limiting.                 |
-| `inMemoryRate`      | `{ windowMs, max, key? }`           | Simple in-memory rate limiting.                |
+| `inMemoryRate`      | `{ windowMs, max, key?, store? }`   | In-memory rate limiting; pass `store` for a shared backend (e.g. Redis). |
 | `allowOrigins`      | `string[]`                          | CORS whitelist.                                |
+| `corsCredentials`   | `boolean`                           | Emit `Access-Control-Allow-Credentials: true` (default `false`). Reflects the specific origin, never `*`. |
 | `onCorsDenied`      | `(origin) => any`                   | Custom response for denied CORS.               |
 | `maskSensitiveData` | `(data) => any`                     | Sanitizes data before sending.                 |
 | `baseUrl`           | `string`                            | Prefix for relative endpoints.                 |
+| `routes`            | `Record<string,string> \| (name,req)=>string\|undefined` | **Named routes**: client sends `{ route }`, server resolves the URL. Removes client control over the destination. |
 | `allowedHosts`      | `string \| string[] \| (url,req)=>boolean` | **SSRF allowlist** of upstream destination hosts for absolute endpoints. |
 | `allowPrivateHosts` | `boolean`                           | Allow internal/loopback/private hosts (default `false`). |
 | `timeoutMs`         | `number`                            | Abort the upstream fetch after N ms (default `30000`; `0` disables). Times out with `504`. |
@@ -309,19 +312,93 @@ export const POST = nextProxyHandler({
 
 > ⚠️ **Breaking change in v2.0.0:** absolute endpoints are now rejected unless their host is in `allowedHosts` (or matches `baseUrl`). If you previously relied on forwarding arbitrary absolute URLs, add the destination hosts to `allowedHosts`.
 
+## Named routes (recommended, strongest SSRF protection)
+
+The root cause of proxy SSRF is letting the **client** choose the destination
+URL. `allowedHosts` constrains that; **named routes remove it entirely**. You
+define the destinations server-side and the client only sends a `route` name:
+
+```ts
+export const POST = nextProxyHandler({
+  baseUrl: "https://api.my-service.com",
+  routes: {
+    profile: "/v1/users/me", // relative, resolved via baseUrl
+    charge: "https://payments.partner.com/charge", // absolute, trusted
+  },
+});
+```
+
+```ts
+// Client — sends a route name, never a URL:
+await fetch("/api/proxy", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ method: "POST", route: "charge", data: { amount: 10 } }),
+});
+```
+
+- The client **cannot** control the destination, so client-driven SSRF is gone
+  for routed calls. Any `endpoint` sent alongside a valid `route` is ignored.
+- Resolved routes are **trusted server-defined destinations**: they bypass
+  `allowedHosts`, but still enforce the `http`/`https` and internal-host checks
+  (`allowPrivateHosts`) as defense in depth.
+- Unknown route names return a generic `400 { error: "Unknown route" }` without
+  disclosing which routes exist. Inherited object keys (e.g. `constructor`) are
+  never resolvable.
+- Use the function form `routes: (name, req) => url | undefined` for dynamic or
+  per-request resolution.
+
+`routes` and `endpoint`/`allowedHosts` can coexist: requests with a `route` use
+named resolution; requests with a raw `endpoint` fall back to the allowlist.
+
 ## CORS and Preflight
 
 Automatically responds to `OPTIONS` with headers configured according to `allowOrigins`.
 
-## In-memory Rate Limiting
+Set `corsCredentials: true` to emit `Access-Control-Allow-Credentials: true` so
+browsers send cookies and `Authorization` on cross-origin requests. The proxy
+always reflects the **specific** request origin (never `*`), keeping credentialed
+CORS spec-compliant — pair it with a real `allowOrigins` allowlist, never a
+blanket `"*"`.
 
-Minimal configuration:
+## Rate limiting
+
+Minimal in-memory configuration (per-instance, best-effort):
 
 ```ts
 inMemoryRate: { windowMs: 15_000, max: 20 }
 ```
 
-Grouping is by IP (`req.ip`) or you can define `key: (req) => 'user:'+id`.
+Grouping is by client IP, or define `key: (req) => "user:" + id`.
+
+> ⚠️ The default in-memory counter lives in a single process. On serverless or
+> multi-instance deployments it is **per-instance**, not a global guarantee.
+
+### Pluggable shared store (Redis, etc.)
+
+For a strict limit shared across instances, pass a `RateLimitStore` via
+`inMemoryRate.store`. Implement `increment(key, windowMs)` returning the running
+`count` and `resetAt`:
+
+```ts
+import type { RateLimitStore } from "nextjs-proxy";
+
+const redisStore: RateLimitStore = {
+  async increment(key, windowMs) {
+    const count = await redis.incr(key);
+    if (count === 1) await redis.pexpire(key, windowMs);
+    const pttl = await redis.pttl(key);
+    return { count, resetAt: Date.now() + pttl };
+  },
+};
+
+export const POST = nextProxyHandler({
+  inMemoryRate: { windowMs: 60_000, max: 100, store: redisStore },
+});
+```
+
+The exported `InMemoryRateLimitStore` class is the default backend; instantiate
+your own for an isolated counter namespace.
 
 ## Common Errors
 

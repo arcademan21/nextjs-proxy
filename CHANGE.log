@@ -1,3 +1,35 @@
+# CHANGE.log 2026-06-04 (v2.1.0)
+
+- **Named routes (mayor protección SSRF):** nueva opción `routes`
+  (`Record<string,string> | (name, req) => string | undefined`). El cliente
+  envía `{ route: "name" }` en vez de una URL y el servidor resuelve el destino,
+  por lo que el cliente deja de controlar a dónde va la petición (elimina el SSRF
+  dirigido por cliente en ese modo, la forma recomendada de usar el proxy).
+	- Las rutas resueltas son destinos de confianza definidos en el servidor:
+	  saltan `allowedHosts` pero siguen respetando la comprobación de protocolo
+	  `http`/`https` y de host interno (`allowPrivateHosts`) como defensa en
+	  profundidad.
+	- Una `route` desconocida devuelve `400 { error: "Unknown route" }` sin
+	  revelar qué nombres existen; las claves heredadas (p. ej. `constructor`) no
+	  se resuelven. Cualquier `endpoint` enviado junto a una `route` válida se
+	  ignora.
+- **Rate limit con store pluggable:** nueva interfaz `RateLimitStore`
+  (`increment(key, windowMs) => { count, resetAt }`) y opción `inMemoryRate.store`
+  para respaldar el límite con un backend compartido (p. ej. Redis) y que sea
+  global entre instancias/serverless, no best-effort por instancia. El store por
+  defecto in-memory se exporta como clase `InMemoryRateLimitStore`.
+- **CORS con credenciales (opt-in):** nueva opción `corsCredentials` que emite
+  `Access-Control-Allow-Credentials: true` en el preflight y la respuesta. El
+  proxy siempre refleja el origin específico (nunca `*`), por lo que el CORS con
+  credenciales es spec-compliant. Las cabeceras CORS se centralizan en un único
+  helper interno.
+- **Tests:** se añade cobertura para named routes, store de rate-limit
+  pluggable/asíncrono, instancias aisladas de `InMemoryRateLimitStore`, CORS con
+  credenciales, `transformResponse` no aplicado a cuerpos no-objeto (texto) y
+  reescritura de `endpoint` vía `transformRequest`. Total 49 tests en verde.
+- **Compatibilidad:** todos los cambios son aditivos; no se rompe ninguna firma
+  existente.
+
 # CHANGE.log 2026-06-04 (v2.0.0)
 
 - **Seguridad (SSRF):** se añade protección contra Server-Side Request Forgery.
