@@ -912,4 +912,83 @@ describe("nextProxyHandler — CORS credentials and transform edge cases", () =>
       "https://api.example.com/rewritten"
     );
   });
+
+  it("throws when corsCredentials is combined with wildcard allowOrigins", () => {
+    expect(() =>
+      nextProxyHandler({ allowOrigins: "*", corsCredentials: true })
+    ).toThrow(/corsCredentials/);
+    expect(() =>
+      nextProxyHandler({ allowOrigins: ["*"], corsCredentials: true })
+    ).toThrow(/corsCredentials/);
+  });
+
+  it("throws when corsCredentials is set without an allowOrigins allowlist", () => {
+    expect(() => nextProxyHandler({ corsCredentials: true })).toThrow(
+      /corsCredentials/
+    );
+  });
+
+  it("accepts corsCredentials with an explicit allowlist or function", () => {
+    expect(() =>
+      nextProxyHandler({ allowOrigins: ["https://app.com"], corsCredentials: true })
+    ).not.toThrow();
+    expect(() =>
+      nextProxyHandler({
+        allowOrigins: (o) => o === "https://app.com",
+        corsCredentials: true,
+      })
+    ).not.toThrow();
+  });
+});
+
+describe("nextProxyHandler — named-route trust does not leak through transformRequest", () => {
+  const realFetch = global.fetch;
+  function mockFetch() {
+    const fn = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+      text: async () => '{"ok":true}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })) as unknown as typeof fetch;
+    global.fetch = fn;
+    return fn as unknown as jest.Mock;
+  }
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it("re-subjects a transform-rewritten endpoint to allowedHosts even with a valid route", async () => {
+    const spy = mockFetch();
+    // A valid route would be trusted, but transformRequest rewrites the
+    // endpoint to a host NOT in allowedHosts using client data. Trust must be
+    // dropped and the allowlist must reject it.
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      routes: { safe: "https://api.example.com/v1" },
+      transformRequest: ({ data }) => ({
+        endpoint: `https://${(data as any).host}/steal`,
+      }),
+    });
+    const req = createMockRequest({
+      body: { method: "GET", route: "safe", data: { host: "evil.com" } },
+    });
+    const res = await handler(req);
+    expect(getStatus(res)).toBe(403);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("still allows a transform rewrite to an allowlisted host", async () => {
+    const spy = mockFetch();
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      routes: { safe: "https://api.example.com/v1" },
+      transformRequest: () => ({ endpoint: "https://api.example.com/v2" }),
+    });
+    const req = createMockRequest({
+      body: { method: "GET", route: "safe" },
+    });
+    expect(getStatus(await handler(req))).toBeLessThan(400);
+    expect(String(spy.mock.calls[0][0])).toBe("https://api.example.com/v2");
+  });
 });

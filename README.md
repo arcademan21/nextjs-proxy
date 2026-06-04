@@ -281,7 +281,7 @@ This pattern allows you to keep your API logic in the App Router (recommended fo
 | `rateLimit`         | `(req) => boolean \| Promise`       | Custom external rate limiting.                 |
 | `inMemoryRate`      | `{ windowMs, max, key?, store? }`   | In-memory rate limiting; pass `store` for a shared backend (e.g. Redis). |
 | `allowOrigins`      | `string[]`                          | CORS whitelist.                                |
-| `corsCredentials`   | `boolean`                           | Emit `Access-Control-Allow-Credentials: true` (default `false`). Reflects the specific origin, never `*`. |
+| `corsCredentials`   | `boolean`                           | Emit `Access-Control-Allow-Credentials: true` (default `false`). Reflects the specific origin, never `*`. Throws if combined with wildcard/unset `allowOrigins`. |
 | `onCorsDenied`      | `(origin) => any`                   | Custom response for denied CORS.               |
 | `maskSensitiveData` | `(data) => any`                     | Sanitizes data before sending.                 |
 | `baseUrl`           | `string`                            | Prefix for relative endpoints.                 |
@@ -348,6 +348,11 @@ await fetch("/api/proxy", {
 - Use the function form `routes: (name, req) => url | undefined` for dynamic or
   per-request resolution.
 
+> Note: if you also set a `transformRequest` that **rewrites** the `endpoint`,
+> the route's trust is dropped and the rewritten URL is re-checked against
+> `allowedHosts` — a transform-derived destination is treated like any client
+> endpoint, not a trusted route.
+
 `routes` and `endpoint`/`allowedHosts` can coexist: requests with a `route` use
 named resolution; requests with a raw `endpoint` fall back to the allowlist.
 
@@ -358,8 +363,10 @@ Automatically responds to `OPTIONS` with headers configured according to `allowO
 Set `corsCredentials: true` to emit `Access-Control-Allow-Credentials: true` so
 browsers send cookies and `Authorization` on cross-origin requests. The proxy
 always reflects the **specific** request origin (never `*`), keeping credentialed
-CORS spec-compliant — pair it with a real `allowOrigins` allowlist, never a
-blanket `"*"`.
+CORS spec-compliant. It **requires an explicit `allowOrigins` allowlist**: the
+handler throws at construction if `corsCredentials` is combined with a wildcard
+`"*"` or an unset `allowOrigins`, since that would grant credentialed CORS to any
+origin.
 
 ## Rate limiting
 

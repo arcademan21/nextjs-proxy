@@ -81,8 +81,10 @@ export interface NextProxyOptions {
    * Emit `Access-Control-Allow-Credentials: true` so browsers send cookies and
    * Authorization on cross-origin requests. The proxy always reflects the
    * specific request origin (never `*`), so enabling this stays spec-compliant.
-   * Only enable it with a real `allowOrigins` allowlist — never a blanket `"*"`
-   * intent — since credentialed CORS must target a trusted origin. Default false.
+   * Requires an explicit `allowOrigins` allowlist (specific origin, list, or
+   * function): `nextProxyHandler` THROWS at construction if this is combined
+   * with a wildcard `"*"` or an unset `allowOrigins`, since that would grant
+   * credentialed CORS to any origin. Default false.
    */
   corsCredentials?: boolean;
   /** Mask sensitive data before sending */
@@ -401,6 +403,26 @@ function isUpstreamAllowed(
  * @param options Advanced options for logging, validation, transformation, etc.
  */
 export function nextProxyHandler(options: NextProxyOptions = {}) {
+  // Fail fast on an insecure CORS configuration: credentialed CORS reflects the
+  // specific request origin, so combining it with a wildcard or unset
+  // `allowOrigins` would hand `Access-Control-Allow-Credentials: true` to ANY
+  // origin (a credential-leak footgun). Require an explicit allowlist; the
+  // function form is the caller's own per-origin decision and is allowed.
+  if (options.corsCredentials) {
+    const ao = options.allowOrigins;
+    const wildcard =
+      ao === undefined ||
+      ao === "*" ||
+      (Array.isArray(ao) && ao.includes("*"));
+    if (wildcard) {
+      throw new Error(
+        "nextjs-proxy: corsCredentials requires an explicit allowOrigins " +
+          "allowlist (a specific origin, list of origins, or a function). It " +
+          "cannot be combined with a wildcard '*' or an unset allowOrigins, " +
+          "because that would grant credentialed CORS to any origin."
+      );
+    }
+  }
   // Helper para validar origen
   function isOriginAllowed(origin: string, req: NextRequest): boolean {
     if (!options.allowOrigins) return true;
@@ -598,7 +620,13 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
             route: route == null ? undefined : String(route),
           }) || {};
         if (transformed.method !== undefined) method = transformed.method;
-        if (transformed.endpoint !== undefined) endpoint = transformed.endpoint;
+        if (transformed.endpoint !== undefined) {
+          endpoint = transformed.endpoint;
+          // The transform produced a new destination (possibly derived from
+          // client-controlled data). It is no longer the server-resolved route
+          // URL, so drop route trust and re-subject it to the allowlist.
+          routeTrusted = false;
+        }
         if (transformed.data !== undefined) data = transformed.data;
       }
 
@@ -684,7 +712,9 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       const started = Date.now();
       let upstream: Response;
       try {
-        upstream = await fetch(endpoint as RequestInfo, fetchOptions);
+        // Fetch exactly the value the SSRF guard validated (String(endpoint)),
+        // never a raw object whose toString could diverge from what we checked.
+        upstream = await fetch(String(endpoint), fetchOptions);
       } finally {
         if (timer) clearTimeout(timer);
       }

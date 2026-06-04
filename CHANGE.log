@@ -23,10 +23,19 @@
   proxy siempre refleja el origin específico (nunca `*`), por lo que el CORS con
   credenciales es spec-compliant. Las cabeceras CORS se centralizan en un único
   helper interno.
+	- **Endurecido:** `nextProxyHandler` lanza un error en construcción si
+	  `corsCredentials` se combina con `allowOrigins` comodín (`"*"`) o ausente,
+	  ya que reflejar el origin con credenciales se concedería a cualquier origin
+	  (fuga de respuesta credentialed). Exige una allowlist explícita.
+	- **Endurecido:** si un `transformRequest` reescribe el `endpoint`, se
+	  descarta la confianza de la named route y la URL resultante se vuelve a
+	  validar contra `allowedHosts` (no se hereda la confianza de la ruta).
 - **Tests:** se añade cobertura para named routes, store de rate-limit
   pluggable/asíncrono, instancias aisladas de `InMemoryRateLimitStore`, CORS con
   credenciales, `transformResponse` no aplicado a cuerpos no-objeto (texto) y
-  reescritura de `endpoint` vía `transformRequest`. Total 49 tests en verde.
+  reescritura de `endpoint` vía `transformRequest`. Se añaden además tests del
+  guard de credenciales+comodín y de la pérdida de confianza de ruta al
+  reescribir el endpoint. Total 54 tests en verde.
 - **Compatibilidad:** todos los cambios son aditivos; no se rompe ninguna firma
   existente.
 
