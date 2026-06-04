@@ -97,7 +97,14 @@ export interface NextProxyOptions {
   allowPrivateHosts?: boolean;
   /** Custom response when origin is not allowed */
   onCorsDenied?: (origin: string) => unknown;
-  /** In-memory rate limiter implementation */
+  /**
+   * In-memory rate limiter implementation.
+   *
+   * NOTE: this counter lives in a single process instance. On serverless /
+   * multi-instance deployments the limit is per-instance and best-effort, not
+   * a global guarantee. For strict, shared limits use the `rateLimit` hook
+   * backed by an external store (e.g. Redis).
+   */
   inMemoryRate?: {
     windowMs: number; // window in ms
     max: number; // max requests per window
@@ -113,6 +120,20 @@ interface InternalRateState {
 
 // Simple in-memory store for rate limiting
 const rateStore: Map<string, InternalRateState> = new Map();
+// Last time we purged expired entries, to bound the store's memory growth.
+let lastRateSweep = 0;
+
+/**
+ * Remove expired entries so the store does not grow unbounded on a long-lived
+ * instance. Runs at most once per `windowMs` to keep it cheap.
+ */
+function sweepExpiredRates(now: number, windowMs: number): void {
+  if (now - lastRateSweep < windowMs) return;
+  lastRateSweep = now;
+  for (const [key, state] of rateStore) {
+    if (state.expires < now) rateStore.delete(key);
+  }
+}
 
 /**
  * Apply in-memory rate limiting
@@ -126,6 +147,7 @@ function applyInMemoryRate(
 ): boolean {
   const key = cfg.key ? cfg.key(req) : getClientIp(req);
   const now = Date.now();
+  sweepExpiredRates(now, cfg.windowMs);
   const current = rateStore.get(key);
   if (!current || current.expires < now) {
     rateStore.set(key, { count: 1, expires: now + cfg.windowMs });
@@ -136,11 +158,22 @@ function applyInMemoryRate(
   return true;
 }
 
-/** Get client IP from request headers or connection info
+/** Get a best-effort client IP from request headers or connection info.
+ *
+ * WARNING: `x-real-ip` and `x-forwarded-for` are client-supplied headers. They
+ * are only trustworthy when set by a proxy/platform you control that overwrites
+ * (not appends to) them. Behind an untrusted network these can be spoofed, so
+ * do NOT treat this value as a security boundary. For rate limiting that must
+ * resist spoofing, supply `inMemoryRate.key` (or the external `rateLimit` hook)
+ * with an identifier derived from a source you trust.
  * @param req The NextRequest object
  * @returns The client IP as a string
  */
 function getClientIp(req: NextRequest): string {
+  // Prefer x-real-ip (single value typically set by the edge/platform) over
+  // x-forwarded-for (a client-controllable, comma-separated chain).
+  const realIp = req.headers.get("x-real-ip");
+  if (realIp) return realIp.trim();
   const xf = req.headers.get("x-forwarded-for");
   if (xf) return xf.split(",")[0].trim();
   // @ts-ignore acceso interno no tipado en modo Node runtime

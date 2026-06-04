@@ -325,6 +325,36 @@ describe("nextProxyHandler", () => {
     expect(getStatus(res)).toBe(400);
   });
 
+  it("prefers x-real-ip over x-forwarded-for for the client IP", async () => {
+    const realFetch = global.fetch;
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+      text: async () => '{"ok":true}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })) as unknown as typeof fetch;
+    const logs: any[] = [];
+    try {
+      const handler = await nextProxyHandler({
+        allowedHosts: ["api.example.com"],
+        log: (info) => logs.push(info),
+      });
+      const req = createMockRequest({
+        headers: {
+          "x-real-ip": "203.0.113.7",
+          "x-forwarded-for": "10.0.0.1, 203.0.113.7",
+        },
+        body: { method: "GET", endpoint: "https://api.example.com/data" },
+      });
+      await handler(req);
+      const requestLog = logs.find((l) => l.type === "request");
+      expect(requestLog.ip).toBe("203.0.113.7");
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
   it("returns 504 when the upstream fetch exceeds timeoutMs", async () => {
     const realFetch = global.fetch;
     // A fetch that never resolves until its abort signal fires.
