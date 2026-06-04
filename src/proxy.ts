@@ -569,8 +569,11 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
           payload: undefined,
           error: error,
         });
+      // Do not leak internal error details (messages, stack, upstream
+      // internals) to the client. The full error is still delivered to the
+      // `log` callback above for server-side observability.
       return NextResponse.json(
-        { error: error || String(error) },
+        { error: "Internal proxy error" },
         { status: 500 }
       );
     }

@@ -325,6 +325,35 @@ describe("nextProxyHandler", () => {
     expect(getStatus(res)).toBe(400);
   });
 
+  it("does not leak internal error details to the client on 500", async () => {
+    const realFetch = global.fetch;
+    global.fetch = (() => {
+      throw new Error("super secret upstream stack trace");
+    }) as unknown as typeof fetch;
+    const logs: any[] = [];
+    try {
+      const handler = await nextProxyHandler({
+        allowedHosts: ["api.example.com"],
+        log: (info) => logs.push(info),
+      });
+      const req = createMockRequest({
+        body: { method: "GET", endpoint: "https://api.example.com/data" },
+      });
+      const res = await handler(req);
+      expect(getStatus(res)).toBe(500);
+      const body = await getBody(res);
+      // Client gets a generic message, never the raw error text.
+      expect(body.error).toBe("Internal proxy error");
+      expect(JSON.stringify(body)).not.toMatch(/secret/i);
+      // The full error is still available server-side via the log callback.
+      const errorLog = logs.find((l) => l.type === "error" && l.status === 500);
+      expect(errorLog).toBeDefined();
+      expect(String(errorLog.error)).toMatch(/secret/i);
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
   it("returns 400 when method/endpoint are missing even if transformRequest is set", async () => {
     const realFetch = global.fetch;
     const spy = jest.fn() as unknown as typeof fetch;
