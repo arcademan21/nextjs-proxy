@@ -1,3 +1,19 @@
+# CHANGE.log 2026-06-04 (v2.2.1)
+
+- **Maintenance only (no proxy runtime change):** metadata, dev type-tooling,
+  and tests only — the proxy implementation in `src/proxy.ts` is untouched.
+	- Normalized `repository.url` to
+	  `git+https://github.com/arcademan21/nextjs-proxy.git` so npm and tooling
+	  resolve the repository cleanly (removes the npm publish warning).
+	- Removed two redundant hand-written `next/server` type shims; the test mocks
+	  now typecheck against the real Next types (`next` devDependency), keeping the
+	  package's own type surface honest instead of shadowing it.
+	- Added a real runtime integration test (`test/integration.test.ts`): a genuine
+	  `NextRequest` driving a live `http` upstream over real `fetch` into a real
+	  `NextResponse` — covering buffered JSON + CORS origin reflection, SSE
+	  streaming passthrough headers, upstream-status passthrough, and the loopback
+	  SSRF block (403). Suite is now 71/71.
+
 # CHANGE.log 2026-06-04 (v2.2.0)
 
 - **Streaming passthrough (new `stream` option):** pipe the upstream body
