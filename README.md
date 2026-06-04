@@ -219,8 +219,6 @@ For app-wide logic (auth, logging) you can pair it with the special Next.js file
 
 `nextProxyHandler` is built on the **Web Fetch API** (`NextRequest` / `NextResponse`). Classic Pages Router API routes (`pages/api/*`) use Node-style `(req, res)` handlers and are **not compatible**. If you use the Pages Router, add an **App Router route handler** for the proxy (both can coexist) and call `/api/proxy` from your frontend as usual.
 
-> ⚠️ **Turbopack:** local/workspace packages can hit module-resolution limits. If you see issues, install `nextjs-proxy` from the registry (not as a linked local package) or force Webpack via `next.config.js`.
-
 ---
 
 ## When to use what
