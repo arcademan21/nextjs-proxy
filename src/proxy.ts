@@ -109,6 +109,13 @@ export interface NextProxyOptions {
     windowMs: number; // window in ms
     max: number; // max requests per window
     key?: (req: NextRequest) => string; // how to identify the client
+    /**
+     * Backend that records hits. Defaults to a shared in-process
+     * `InMemoryRateLimitStore`. Provide a shared `RateLimitStore` (e.g. Redis)
+     * to enforce the limit globally across instances. The `windowMs`/`max`/`key`
+     * values above still drive the windowing and the allow/deny decision.
+     */
+    store?: RateLimitStore;
   };
 }
 
@@ -118,44 +125,85 @@ interface InternalRateState {
   expires: number;
 }
 
-// Simple in-memory store for rate limiting
-const rateStore: Map<string, InternalRateState> = new Map();
-// Last time we purged expired entries, to bound the store's memory growth.
-let lastRateSweep = 0;
-
-/**
- * Remove expired entries so the store does not grow unbounded on a long-lived
- * instance. Runs at most once per `windowMs` to keep it cheap.
- */
-function sweepExpiredRates(now: number, windowMs: number): void {
-  if (now - lastRateSweep < windowMs) return;
-  lastRateSweep = now;
-  for (const [key, state] of rateStore) {
-    if (state.expires < now) rateStore.delete(key);
-  }
+/** Result of incrementing a rate-limit counter for a key. */
+export interface RateLimitHit {
+  /** Number of requests recorded in the current window, including this hit. */
+  count: number;
+  /** Epoch milliseconds at which the current window resets. */
+  resetAt: number;
 }
 
 /**
- * Apply in-memory rate limiting
- * @param req The NextRequest object
- * @param cfg The rate limiting configuration
- * @returns True if the request is allowed, false if rate limited
+ * Pluggable rate-limit backend. Implement this to back rate limiting with a
+ * shared store (Redis, Memcached, a database) so the limit holds across
+ * serverless / multi-instance deployments. `increment` must record one hit for
+ * `key` within a `windowMs` window and return the running count and reset time.
+ *
+ * Example (Redis): `INCR key`; if the result is 1, `PEXPIRE key windowMs`;
+ * return `{ count, resetAt: now + pttl }`.
  */
-function applyInMemoryRate(
+export interface RateLimitStore {
+  increment(
+    key: string,
+    windowMs: number
+  ): Promise<RateLimitHit> | RateLimitHit;
+}
+
+/**
+ * Default in-process rate-limit store backed by a Map. Counters live in a
+ * single instance, so on serverless / multi-instance deployments the limit is
+ * per-instance and best-effort. For strict global limits, pass a shared
+ * `RateLimitStore` (e.g. Redis) via `inMemoryRate.store`.
+ *
+ * Instantiate your own to get an isolated counter namespace; the proxy uses a
+ * shared module-level instance by default.
+ */
+export class InMemoryRateLimitStore implements RateLimitStore {
+  private store: Map<string, InternalRateState> = new Map();
+  // Last time we purged expired entries, to bound the store's memory growth.
+  private lastSweep = 0;
+
+  /**
+   * Remove expired entries so the store does not grow unbounded on a long-lived
+   * instance. Runs at most once per `windowMs` to keep it cheap.
+   */
+  private sweep(now: number, windowMs: number): void {
+    if (now - this.lastSweep < windowMs) return;
+    this.lastSweep = now;
+    for (const [key, state] of this.store) {
+      if (state.expires < now) this.store.delete(key);
+    }
+  }
+
+  increment(key: string, windowMs: number): RateLimitHit {
+    const now = Date.now();
+    this.sweep(now, windowMs);
+    const current = this.store.get(key);
+    if (!current || current.expires < now) {
+      const resetAt = now + windowMs;
+      this.store.set(key, { count: 1, expires: resetAt });
+      return { count: 1, resetAt };
+    }
+    current.count += 1;
+    return { count: current.count, resetAt: current.expires };
+  }
+}
+
+// Shared default store used when `inMemoryRate.store` is not provided.
+const defaultRateStore = new InMemoryRateLimitStore();
+
+/**
+ * Apply in-memory rate limiting via the configured (or default) store.
+ * @returns True if the request is allowed, false if rate limited.
+ */
+async function applyInMemoryRate(
   req: NextRequest,
   cfg: NonNullable<NextProxyOptions["inMemoryRate"]>
-): boolean {
+): Promise<boolean> {
   const key = cfg.key ? cfg.key(req) : getClientIp(req);
-  const now = Date.now();
-  sweepExpiredRates(now, cfg.windowMs);
-  const current = rateStore.get(key);
-  if (!current || current.expires < now) {
-    rateStore.set(key, { count: 1, expires: now + cfg.windowMs });
-    return true;
-  }
-  if (current.count >= cfg.max) return false;
-  current.count += 1;
-  return true;
+  const store = cfg.store ?? defaultRateStore;
+  const { count } = await store.increment(key, cfg.windowMs);
+  return count <= cfg.max;
 }
 
 /** Get a best-effort client IP from request headers or connection info.
@@ -392,7 +440,10 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
     }
 
     // In-memory rate limiting if configured
-    if (options.inMemoryRate && !applyInMemoryRate(req, options.inMemoryRate)) {
+    if (
+      options.inMemoryRate &&
+      !(await applyInMemoryRate(req, options.inMemoryRate))
+    ) {
       return NextResponse.json(
         { error: "Rate limit exceeded" },
         { status: 429 }

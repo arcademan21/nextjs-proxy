@@ -30,8 +30,14 @@ async function getBody(res: any): Promise<any> {
   if (res._getData) return res._getData();
   return undefined;
 }
-import { nextProxyHandler, NextProxyOptions } from "../src/proxy";
-import type { ProxyRequestPayload, ProxyResponsePayload } from "../src/proxy";
+import { nextProxyHandler, InMemoryRateLimitStore } from "../src/proxy";
+import type {
+  NextProxyOptions,
+  ProxyRequestPayload,
+  ProxyResponsePayload,
+  RateLimitStore,
+  RateLimitHit,
+} from "../src/proxy";
 // Definición local mínima de NextRequest para pruebas, igual que en proxy.ts
 type NextRequest = {
   method: string;
@@ -600,5 +606,54 @@ describe("nextProxyHandler — SSRF protection (allowedHosts)", () => {
     expect(String(spy.mock.calls[0][0])).toBe(
       "https://api.service.com/v1/health"
     );
+  });
+});
+
+describe("nextProxyHandler — pluggable rate-limit store", () => {
+  const realFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it("routes rate-limit accounting through a custom store", async () => {
+    const calls: Array<{ key: string; windowMs: number }> = [];
+    const store: RateLimitStore = {
+      increment(key, windowMs) {
+        calls.push({ key, windowMs });
+        // Allow the first hit, deny from the second on.
+        return { count: calls.length, resetAt: Date.now() + windowMs };
+      },
+    };
+    const handler = nextProxyHandler({
+      inMemoryRate: { windowMs: 1000, max: 1, key: () => "k", store },
+    });
+    const req = createMockRequest();
+    expect(getStatus(await handler(req))).not.toBe(429); // count 1 <= max 1
+    expect(getStatus(await handler(req))).toBe(429); // count 2 > max 1
+    expect(calls).toEqual([
+      { key: "k", windowMs: 1000 },
+      { key: "k", windowMs: 1000 },
+    ]);
+  });
+
+  it("awaits an async (Promise-returning) store", async () => {
+    const store: RateLimitStore = {
+      async increment(_key, windowMs): Promise<RateLimitHit> {
+        return { count: 99, resetAt: Date.now() + windowMs };
+      },
+    };
+    const handler = nextProxyHandler({
+      inMemoryRate: { windowMs: 1000, max: 5, key: () => "async", store },
+    });
+    expect(getStatus(await handler(createMockRequest()))).toBe(429);
+  });
+
+  it("InMemoryRateLimitStore instances keep isolated counters", () => {
+    const a = new InMemoryRateLimitStore();
+    const b = new InMemoryRateLimitStore();
+    expect(a.increment("x", 1000).count).toBe(1);
+    expect(a.increment("x", 1000).count).toBe(2);
+    // A separate instance does not see the other's counter.
+    expect(b.increment("x", 1000).count).toBe(1);
   });
 });
