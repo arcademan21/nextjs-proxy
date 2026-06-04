@@ -16,12 +16,6 @@ export default tseslint.config(
       parserOptions: { ecmaVersion: 2022, sourceType: "module" },
     },
   },
-  // Type-shim declarations mirror Next.js internals that are themselves
-  // untyped; `any` is the pragmatic, correct choice there.
-  {
-    files: ["**/*.d.ts"],
-    rules: { "@typescript-eslint/no-explicit-any": "off" },
-  },
   // Tests use `any` to shape mocks and reach internals; not shipped code.
   {
     files: ["test/**/*.ts"],

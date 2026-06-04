@@ -37,13 +37,10 @@ import type {
   RateLimitStore,
   RateLimitHit,
 } from "../src/proxy";
-// Minimal local definition of NextRequest for tests, same as in proxy.ts
-type NextRequest = {
-  method: string;
-  headers: Headers;
-  json(): Promise<any>;
-  url: string;
-};
+// Type the lightweight request mocks as the REAL next/server NextRequest
+// (next is a devDependency). This keeps the package's own typecheck honest
+// about the API surface instead of shadowing it with a hand-written shim.
+import type { NextRequest } from "next/server";
 
 // Mock NextRequest for testing
 function createMockRequest({
