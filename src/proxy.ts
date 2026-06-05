@@ -13,6 +13,7 @@ export interface LogInfo {
   payload?: unknown;
   error?: unknown;
 }
+
 // Types for safe request/response transformation
 export interface ProxyRequestPayload {
   method: string;
@@ -66,7 +67,7 @@ export interface NextProxyOptions {
   validate?: (req: NextRequest) => Promise<boolean> | boolean;
   /** Transform input data (method, endpoint, data) before proxying */
   transformRequest?: (
-    payload: ProxyRequestPayload
+    payload: ProxyRequestPayload,
   ) => Partial<ProxyRequestPayload> | void;
   /** Transform the response before returning to the client */
   transformResponse?: (res: ProxyResponsePayload) => ProxyResponsePayload;
@@ -221,7 +222,7 @@ export interface RateLimitHit {
 export interface RateLimitStore {
   increment(
     key: string,
-    windowMs: number
+    windowMs: number,
   ): Promise<RateLimitHit> | RateLimitHit;
 }
 
@@ -274,7 +275,7 @@ const defaultRateStore = new InMemoryRateLimitStore();
  */
 async function applyInMemoryRate(
   req: NextRequest,
-  cfg: NonNullable<NextProxyOptions["inMemoryRate"]>
+  cfg: NonNullable<NextProxyOptions["inMemoryRate"]>,
 ): Promise<boolean> {
   const key = cfg.key ? cfg.key(req) : getClientIp(req);
   const store = cfg.store ?? defaultRateStore;
@@ -367,7 +368,7 @@ function matchHostPattern(pattern: string, hostname: string): boolean {
 function resolveNamedRoute(
   name: string,
   req: NextRequest,
-  options: NextProxyOptions
+  options: NextProxyOptions,
 ): string | undefined {
   const routes = options.routes;
   if (!routes) return undefined;
@@ -387,7 +388,7 @@ function resolveNamedRoute(
 function shouldStream(
   opt: NextProxyOptions["stream"],
   req: NextRequest,
-  upstream: { headers?: { get?: (key: string) => string | null } }
+  upstream: { headers?: { get?: (key: string) => string | null } },
 ): boolean {
   if (!opt) return false;
   const decision = typeof opt === "function" ? opt(req) : opt;
@@ -419,7 +420,7 @@ function isUpstreamAllowed(
   rawUrl: string,
   req: NextRequest,
   options: NextProxyOptions,
-  trusted = false
+  trusted = false,
 ): { ok: boolean; reason?: string } {
   let url: URL;
   try {
@@ -480,18 +481,17 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
   if (options.corsCredentials) {
     const ao = options.allowOrigins;
     const wildcard =
-      ao === undefined ||
-      ao === "*" ||
-      (Array.isArray(ao) && ao.includes("*"));
+      ao === undefined || ao === "*" || (Array.isArray(ao) && ao.includes("*"));
     if (wildcard) {
       throw new Error(
         "nextjs-proxy: corsCredentials requires an explicit allowOrigins " +
           "allowlist (a specific origin, list of origins, or a function). It " +
           "cannot be combined with a wildcard '*' or an unset allowOrigins, " +
-          "because that would grant credentialed CORS to any origin."
+          "because that would grant credentialed CORS to any origin.",
       );
     }
   }
+
   // Helper to validate the origin
   function isOriginAllowed(origin: string, req: NextRequest): boolean {
     if (!options.allowOrigins) return true;
@@ -508,6 +508,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
     }
     return false;
   }
+
   // Build the CORS grant headers for an allowed origin. Reflects the specific
   // request origin (never literal "*") so it can be combined with credentials.
   function corsGrantHeaders(origin: string): Record<string, string> {
@@ -525,6 +526,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
     }
     return headers;
   }
+
   return async function handler(req: NextRequest) {
     const origin = req.headers.get("origin") || "";
 
@@ -546,7 +548,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         });
       return NextResponse.json(
         { error: "Unauthorized (auth)" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -568,7 +570,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         });
       return NextResponse.json(
         { error: "Forbidden (csrf/xss)" },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
@@ -606,7 +608,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
     ) {
       return NextResponse.json(
         { error: "Rate limit exceeded" },
-        { status: 429 }
+        { status: 429 },
       );
     }
 
@@ -614,7 +616,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
     if (options.rateLimit && !(await options.rateLimit(req))) {
       return NextResponse.json(
         { error: "Rate limit exceeded" },
-        { status: 429 }
+        { status: 429 },
       );
     }
 
@@ -658,16 +660,13 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         if (!options.routes) {
           return NextResponse.json(
             { error: "Named routes are not configured" },
-            { status: 400 }
+            { status: 400 },
           );
         }
         const resolved = resolveNamedRoute(String(route), req, options);
         if (!resolved) {
           // Generic message: do not disclose which route names exist.
-          return NextResponse.json(
-            { error: "Unknown route" },
-            { status: 400 }
-          );
+          return NextResponse.json({ error: "Unknown route" }, { status: 400 });
         }
         endpoint = resolved;
         routeTrusted = true;
@@ -702,7 +701,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       if (!method || !endpoint) {
         return NextResponse.json(
           { error: "Missing method or endpoint" },
-          { status: 400 }
+          { status: 400 },
         );
       }
 
@@ -711,7 +710,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         if (!options.baseUrl) {
           return NextResponse.json(
             { error: "Relative endpoint without baseUrl" },
-            { status: 400 }
+            { status: 400 },
           );
         }
         endpoint =
@@ -725,7 +724,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         String(endpoint),
         req,
         options,
-        routeTrusted
+        routeTrusted,
       );
       if (!upstreamCheck.ok) {
         if (options.log)
@@ -744,7 +743,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
           });
         return NextResponse.json(
           { error: "Endpoint not allowed" },
-          { status: 403 }
+          { status: 403 },
         );
       }
 
@@ -809,7 +808,10 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
         streamHeaders.set("x-content-type-options", "nosniff");
         // Server-Sent Events break behind buffering reverse proxies (e.g. nginx)
         // unless buffering is explicitly disabled for the connection.
-        if ((upstreamCt || "").split(";")[0].trim().toLowerCase() === "text/event-stream") {
+        if (
+          (upstreamCt || "").split(";")[0].trim().toLowerCase() ===
+          "text/event-stream"
+        ) {
           streamHeaders.set("x-accel-buffering", "no");
         }
         if (options.allowOrigins) {
@@ -907,7 +909,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       if (isTimeout) {
         return NextResponse.json(
           { error: "Upstream request timed out" },
-          { status: 504 }
+          { status: 504 },
         );
       }
       // Do not leak internal error details (messages, stack, upstream
@@ -915,7 +917,7 @@ export function nextProxyHandler(options: NextProxyOptions = {}) {
       // `log` callback above for server-side observability.
       return NextResponse.json(
         { error: "Internal proxy error" },
-        { status: 500 }
+        { status: 500 },
       );
     }
   };
