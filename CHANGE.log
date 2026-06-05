@@ -1,3 +1,11 @@
+# CHANGE.log 2026-06-05 (v2.2.2)
+
+- **Formatting only (no proxy runtime change):** reformatted `src/proxy.ts` to
+  satisfy the project formatter — trailing commas on multi-line arguments and
+  consistent blank lines between declarations. No control flow, status codes,
+  strings, or security logic changed; the 71/71 suite, type-check, lint, build,
+  and the Next 13/14/15 compat matrix all stay green.
+
 # CHANGE.log 2026-06-04 (v2.2.1)
 
 - **Maintenance only (no proxy runtime change):** metadata, dev type-tooling,
