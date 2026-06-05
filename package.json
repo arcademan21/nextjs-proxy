@@ -1,6 +1,6 @@
 {
   "name": "nextjs-proxy",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "Universal, secure proxy for Next.js. Centralize, audit, and control all external API calls from a single entry point.",
   "author": "Haroldy Arturo Pérez Rodríguez <haroldyarturo@gmail.com>",
   "license": "MIT",
@@ -29,6 +29,8 @@
     "build": "tsup src/index.ts --dts --format esm,cjs --out-dir dist --sourcemap",
     "clean": "rm -rf dist",
     "prepublishOnly": "pnpm run clean && pnpm run build",
+    "typecheck": "tsc --noEmit",
+    "pretest": "pnpm run typecheck",
     "test": "jest",
     "lint": "eslint ."
   },

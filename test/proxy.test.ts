@@ -1238,3 +1238,331 @@ describe("nextProxyHandler — streaming passthrough", () => {
     expect(body).toMatchObject({ id: 1, ok: true });
   });
 });
+
+// Targeted coverage for branches the broader suites do not exercise: the
+// in-memory store sweep, IP resolution fallbacks, the full isInternalHost
+// classifier (IPv6 unique-local / link-local, IPv4-mapped, malformed octets),
+// the allowedHosts function-deny path, log-on-guard-failure events, the
+// onCorsDenied hook, the binary-response fallback, and the upstream timeout.
+describe("nextProxyHandler — guard logging, IP, SSRF classifier, and edge paths", () => {
+  const realFetch = global.fetch;
+  function mockJson(body: unknown, status = 200, ok = status < 400) {
+    const fn = jest.fn(async () => ({
+      ok,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+      arrayBuffer: async () => new ArrayBuffer(0),
+      headers: { get: () => null },
+    })) as unknown as typeof fetch;
+    global.fetch = fn;
+    return fn as unknown as jest.Mock;
+  }
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it("logs a 401 error event when auth fails and a log callback is set", async () => {
+    const logs: any[] = [];
+    const handler = nextProxyHandler({ auth: () => false, log: (e) => logs.push(e) });
+    const res = await handler(createMockRequest());
+    expect(getStatus(res)).toBe(401);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ type: "error", level: "error", status: 401 });
+  });
+
+  it("logs a 403 error event when csrf fails and a log callback is set", async () => {
+    const logs: any[] = [];
+    const handler = nextProxyHandler({ csrf: () => false, log: (e) => logs.push(e) });
+    const res = await handler(createMockRequest());
+    expect(getStatus(res)).toBe(403);
+    expect(logs[0]).toMatchObject({ type: "error", level: "error", status: 403 });
+  });
+
+  it("uses onCorsDenied to build the body for a disallowed non-preflight origin", async () => {
+    const handler = nextProxyHandler({
+      allowOrigins: ["https://allowed.com"],
+      onCorsDenied: (origin) => ({ error: "nope", from: origin }),
+    });
+    const res = await handler(
+      createMockRequest({ origin: "https://evil.com" })
+    );
+    expect(getStatus(res)).toBe(403);
+    const body = await getBody(res);
+    expect(body).toMatchObject({ error: "nope", from: "https://evil.com" });
+  });
+
+  it("allows a specific string origin and denies any other (string allowOrigins)", async () => {
+    mockJson({ ok: true });
+    const handler = nextProxyHandler({
+      allowOrigins: "https://only.com",
+      baseUrl: "https://api.example.com",
+    });
+    const denied = await handler(
+      createMockRequest({ origin: "https://other.com" })
+    );
+    expect(getStatus(denied)).toBe(403);
+    const allowed = await handler(
+      createMockRequest({
+        origin: "https://only.com",
+        body: { method: "GET", endpoint: "/ok" },
+      })
+    );
+    expect(getStatus(allowed)).toBe(200);
+  });
+
+  it("denies an origin missing from an allowOrigins array without a wildcard", async () => {
+    const handler = nextProxyHandler({
+      allowOrigins: ["https://a.com", "https://b.com"],
+    });
+    const res = await handler(createMockRequest({ origin: "https://c.com" }));
+    expect(getStatus(res)).toBe(403);
+  });
+
+  it("denies when the external rateLimit hook returns false", async () => {
+    const handler = nextProxyHandler({ rateLimit: () => false });
+    const res = await handler(
+      createMockRequest({ body: { method: "GET", endpoint: "https://api.example.com/x" } })
+    );
+    expect(getStatus(res)).toBe(429);
+    const body = await getBody(res);
+    expect(body.error).toMatch(/rate limit/i);
+  });
+
+  it("derives the client IP from x-forwarded-for when x-real-ip is absent", async () => {
+    const logs: any[] = [];
+    mockJson({ ok: true });
+    const handler = nextProxyHandler({
+      baseUrl: "https://api.example.com",
+      log: (e) => logs.push(e),
+    });
+    await handler(
+      createMockRequest({
+        headers: { "x-forwarded-for": "203.0.113.7, 70.41.3.18" },
+        body: { method: "GET", endpoint: "/ok" },
+      })
+    );
+    const requestLog = logs.find((l) => l.type === "request");
+    expect(requestLog.ip).toBe("203.0.113.7");
+  });
+
+  it("forwards a bare Authorization token as Bearer and leaves an existing Bearer untouched", async () => {
+    const seen: Record<string, string>[] = [];
+    global.fetch = jest.fn(async (_url: any, init: any) => {
+      seen.push(init.headers);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true }),
+        text: async () => "{}",
+        arrayBuffer: async () => new ArrayBuffer(0),
+        headers: { get: () => null },
+      };
+    }) as unknown as typeof fetch;
+    const handler = nextProxyHandler({ baseUrl: "https://api.example.com" });
+    await handler(
+      createMockRequest({
+        headers: { Authorization: "raw-token" },
+        body: { method: "POST", endpoint: "/a", data: { x: 1 } },
+      })
+    );
+    await handler(
+      createMockRequest({
+        headers: { Authorization: "Bearer keep-me" },
+        body: { method: "POST", endpoint: "/b", data: { x: 1 } },
+      })
+    );
+    global.fetch = realFetch;
+    expect(seen[0].Authorization).toBe("Bearer raw-token");
+    expect(seen[1].Authorization).toBe("Bearer keep-me");
+  });
+
+  it("returns a binary-fallback descriptor when the upstream is neither JSON nor text", async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error("not json");
+      },
+      text: async () => {
+        throw new Error("not text");
+      },
+      arrayBuffer: async () => new ArrayBuffer(8),
+      headers: { get: () => null },
+    })) as unknown as typeof fetch;
+    const handler = nextProxyHandler({ baseUrl: "https://api.example.com" });
+    const res = await handler(
+      createMockRequest({ body: { method: "GET", endpoint: "/blob" } })
+    );
+    global.fetch = realFetch;
+    const body = await getBody(res);
+    expect(body).toMatchObject({
+      message: "Unprocessable response (binary)",
+      length: 8,
+    });
+  });
+
+  it("returns 504 and logs the event when the upstream fetch aborts (timeout)", async () => {
+    const logs: any[] = [];
+    global.fetch = jest.fn(async () => {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    }) as unknown as typeof fetch;
+    const handler = nextProxyHandler({
+      baseUrl: "https://api.example.com",
+      timeoutMs: 5,
+      log: (e) => logs.push(e),
+    });
+    const res = await handler(
+      createMockRequest({ body: { method: "GET", endpoint: "/slow" } })
+    );
+    global.fetch = realFetch;
+    expect(getStatus(res)).toBe(504);
+    const body = await getBody(res);
+    expect(body.error).toMatch(/timed out/i);
+    expect(logs.some((l) => l.status === 504)).toBe(true);
+  });
+
+  it("calls monitor (without a response arg) on the streaming path", async () => {
+    const calls: any[] = [];
+    global.fetch = jest.fn(
+      async () =>
+        new Response("data: x\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        })
+    ) as unknown as typeof fetch;
+    const handler = nextProxyHandler({
+      allowedHosts: ["api.example.com"],
+      stream: true,
+      monitor: (...args: any[]) => calls.push(args),
+    });
+    await handler(
+      createMockRequest({ body: { method: "GET", endpoint: "https://api.example.com/sse" } })
+    );
+    global.fetch = realFetch;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toHaveLength(1); // monitor(req) only — body never buffered
+  });
+});
+
+describe("nextProxyHandler — SSRF classifier and allowedHosts function", () => {
+  const realFetch = global.fetch;
+  function mockOk() {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+      text: async () => "{}",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      headers: { get: () => null },
+    })) as unknown as typeof fetch;
+  }
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  it.each([
+    ["IPv6 unique-local (fc00::/7)", "http://[fd00::1]/x"],
+    ["IPv6 link-local (fe80::/10)", "http://[fe80::1]/x"],
+    ["bare loopback", "http://127.0.0.1/x"],
+    ["private LAN (192.168/16)", "http://192.168.1.10/x"],
+  ])("blocks an internal host by default: %s", async (_label, endpoint) => {
+    const handler = nextProxyHandler({ allowedHosts: "*" });
+    const res = await handler(
+      createMockRequest({ body: { method: "GET", endpoint } })
+    );
+    expect(getStatus(res)).toBe(403);
+    const body = await getBody(res);
+    expect(body.error).toBe("Endpoint not allowed");
+  });
+
+  it("rejects a syntactically invalid absolute URL with 403 (Invalid endpoint URL)", async () => {
+    // "https://" passes the absolute-URL regex but `new URL()` throws on it, so
+    // the SSRF guard returns its "Invalid endpoint URL" denial (403).
+    const handler = nextProxyHandler({ allowedHosts: "*" });
+    const res = await handler(
+      createMockRequest({ body: { method: "GET", endpoint: "https://" } })
+    );
+    expect(getStatus(res)).toBe(403);
+  });
+
+  it("rejects a non-http(s) protocol resolved via baseUrl with 403", async () => {
+    // The absolute-URL regex only recognizes http(s), so the only way to reach
+    // the protocol check is a non-http baseUrl joined to a relative endpoint.
+    const handler = nextProxyHandler({
+      baseUrl: "ftp://files.example.com",
+      allowPrivateHosts: true,
+    });
+    const res = await handler(
+      createMockRequest({ body: { method: "GET", endpoint: "/x" } })
+    );
+    expect(getStatus(res)).toBe(403);
+  });
+
+  it("allows a public host approved by an allowedHosts function and denies otherwise", async () => {
+    mockOk();
+    const allowed = await nextProxyHandler({
+      allowedHosts: (url: URL) => url.hostname === "good.example.com",
+    })(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://good.example.com/x" },
+      })
+    );
+    expect(getStatus(allowed)).toBe(200);
+
+    const denied = await nextProxyHandler({
+      allowedHosts: (url: URL) => url.hostname === "good.example.com",
+    })(
+      createMockRequest({
+        body: { method: "GET", endpoint: "https://bad.example.com/x" },
+      })
+    );
+    expect(getStatus(denied)).toBe(403);
+  });
+
+  it("matches an absolute host against a wildcard '*' allowedHosts entry", async () => {
+    mockOk();
+    const handler = nextProxyHandler({ allowedHosts: ["*"] });
+    const res = await handler(
+      createMockRequest({ body: { method: "GET", endpoint: "https://anything.dev/x" } })
+    );
+    expect(getStatus(res)).toBe(200);
+  });
+
+  it("rejects an unknown name when routes is a function returning undefined", async () => {
+    const handler = nextProxyHandler({
+      routes: (name: string) => (name === "known" ? "https://api.example.com/k" : undefined),
+    });
+    const res = await handler(
+      createMockRequest({ body: { method: "GET", route: "ghost" } })
+    );
+    expect(getStatus(res)).toBe(400);
+    const body = await getBody(res);
+    expect(body.error).toBe("Unknown route");
+  });
+});
+
+describe("InMemoryRateLimitStore — sweep purges expired entries", () => {
+  it("removes an expired key during a later sweep on a new window", () => {
+    const store = new InMemoryRateLimitStore();
+    const realNow = Date.now;
+    let now = 1_000_000;
+    Date.now = () => now;
+    try {
+      // First hit creates key "a" with a 100ms window.
+      store.increment("a", 100);
+      // Advance past the window AND past one full windowMs so sweep runs, then
+      // touch a different key to trigger the sweep over "a".
+      now += 1_000;
+      store.increment("b", 100);
+      // "a" was expired and should have been purged; a fresh increment restarts
+      // its count at 1 (proving the old entry is gone, not carried over).
+      const hit = store.increment("a", 100);
+      expect(hit.count).toBe(1);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});
