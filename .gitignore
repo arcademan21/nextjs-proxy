@@ -2,3 +2,9 @@ node_modules/
 dist/
 coverage/
 .env
+
+# OS / editor noise
+.DS_Store
+
+# Local tooling artifacts (skill registry cache, etc.)
+.atl/
