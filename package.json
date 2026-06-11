@@ -1,7 +1,8 @@
 {
   "name": "nextjs-proxy",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Universal, secure proxy for Next.js. Centralize, audit, and control all external API calls from a single entry point.",
+  "homepage": "https://next-proxy-web.vercel.app",
   "author": "Haroldy Arturo Pérez Rodríguez <haroldyarturo@gmail.com>",
   "license": "MIT",
   "repository": {
