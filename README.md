@@ -221,6 +221,168 @@ nextProxyHandler({
 
 ---
 
+## Client-Side Usage — `proxyFetch` helper & React Hook
+
+The package includes a type-safe client helper and React hook that abstract the POST-to-proxy pattern into a clean, typed API.
+
+### Installation
+
+Already installed — `proxyFetch`, `useProxyFetch`, and `ProxyFetchProvider` are re-exported from the same `nextjs-proxy` package:
+
+```ts
+import { proxyFetch, useProxyFetch, ProxyFetchProvider } from "nextjs-proxy";
+```
+
+### 1. Basic GET
+
+```ts
+import { proxyFetch } from "nextjs-proxy";
+
+interface User {
+  id: number;
+  name: string;
+}
+
+const response = await proxyFetch<User>({
+  route: "user",
+  data: { id: 42 },
+  // method defaults to "GET"
+  // url defaults to "/api/proxy"
+});
+
+if (response.ok) {
+  console.log(response.data.name); // ✅ typed as string
+} else {
+  console.log(response.status);    // e.g., 404
+  console.log(response.error);     // server error details
+}
+```
+
+### 2. POST with Data (Form Submission)
+
+```ts
+const response = await proxyFetch({
+  route: "users",
+  method: "POST",
+  data: { name: "Alice", email: "alice@example.com" },
+  headers: { "X-Request-ID": "abc-123" },
+});
+
+if (response.ok) {
+  // Created — handle success
+} else if (response.status === 400) {
+  console.log(response.error); // Validation error
+}
+```
+
+### 3. `useProxyFetch` Hook (Loading / Error / Data)
+
+```tsx
+import { useProxyFetch } from "nextjs-proxy";
+
+function UserProfile({ userId }: { userId: number }) {
+  const { data, error, loading, refetch } = useProxyFetch<User>({
+    route: "user",
+    data: { id: userId },
+    enabled: true, // fetch on mount (default)
+  });
+
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  if (!data) return <div>No data</div>;
+
+  return (
+    <div>
+      <p>{data.name}</p>
+      <button onClick={() => refetch()}>Refresh</button>
+    </div>
+  );
+}
+```
+
+### 4. Polling (Auto-Update)
+
+```tsx
+import { useProxyFetch } from "nextjs-proxy";
+
+function LiveNotifications() {
+  const { data: notifications, loading } = useProxyFetch({
+    route: "notifications",
+    enabled: true,
+    refetchInterval: 5000, // Check every 5 seconds
+  });
+
+  return (
+    <div>
+      {loading && <span>Syncing...</span>}
+      <ul>
+        {notifications?.map((n: { id: string; message: string }) => (
+          <li key={n.id}>{n.message}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+Polling starts **after** the first response completes (not immediately on mount). It continues on error and is cleaned up on unmount.
+
+### 5. Error Handling (Network vs Server)
+
+```ts
+import { proxyFetch } from "nextjs-proxy";
+
+// HTTP errors (4xx/5xx) — returned in the response, never thrown
+const response = await proxyFetch<User>({ route: "user" });
+
+if (!response.ok) {
+  // Server error — inspect response.status and response.error
+  console.log(response.status);    // e.g., 500
+  console.log(response.error);     // ErrorInfo { type: "server", status, message }
+}
+
+// Network errors (DNS fail, CORS, network down) — thrown as exceptions
+try {
+  const data = await proxyFetch({ route: "user" });
+} catch (err) {
+  // err is a TypeError (network) or AbortError (timeout)
+  console.error("Network error:", (err as Error).message);
+}
+```
+
+| Scenario | Behavior |
+|----------|----------|
+| HTTP 2xx | `response.ok === true`, `response.data` populated, `error` is `undefined` |
+| HTTP 4xx/5xx | `response.ok === false`, `response.error` is `ErrorInfo { type: "server", status, message }` |
+| Network down / DNS / CORS | `proxyFetch()` throws `TypeError` — catch with `try/catch` |
+| Timeout (AbortController) | `proxyFetch()` throws `AbortError(name: "AbortError")` — catch with `try/catch` |
+
+### 6. Context Setup (Global URL)
+
+Wrap your app (or a subtree) with `ProxyFetchProvider` to set a global proxy URL:
+
+```tsx
+import { ProxyFetchProvider, proxyFetch } from "nextjs-proxy";
+
+// In your app root:
+<ProxyFetchProvider url="/api/v2/proxy">
+  <App />
+</ProxyFetchProvider>
+
+// Any component inside the provider:
+const response = await proxyFetch({ route: "user" }); // uses "/api/v2/proxy"
+
+// Per-call URL always overrides context:
+const response2 = await proxyFetch({
+  route: "user",
+  url: "/custom", // forces this URL for this call only
+});
+```
+
+If no provider is present, `proxyFetch()` defaults to `"/api/proxy"`.
+
+---
+
 ## Next.js setup
 
 ### 1. Route handler (the package API)

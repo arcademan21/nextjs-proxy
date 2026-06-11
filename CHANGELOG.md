@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-11
+
+### Added
+
+- **`proxyFetch()` client helper** (`src/client.ts`): type-safe, convenient
+  wrapper around the proxy endpoint with automatic error classification and
+  response parsing. Accepts `{ route, data?, method?, headers?, url? }` and
+  returns `ProxyFetchResponse<T>` with `{ ok, status, data?, error?, headers? }`.
+  HTTP errors (4xx/5xx) are returned in the response — only network errors throw.
+  Generics: `proxyFetch<User>({ route: "user" })` types the `data` field.
+  Response parsing falls back gracefully: JSON → text → binary descriptor.
+
+- **`useProxyFetch()` React hook** (`src/hooks.ts`): wraps `proxyFetch()` with
+  state management (`loading`, `data`, `error`), manual `refetch()`, optional
+  polling via `refetchInterval`, and `onSuccess`/`onError` callbacks. Polling
+  starts after the first response (not immediately), cleans up on unmount, and
+  restarts on manual refetch. Refetch is debounced while a request is in flight.
+
+- **`ProxyFetchProvider` React Context** (`src/context.tsx`): optional context
+  provider that injects a proxy URL into all child `proxyFetch()` and
+  `useProxyFetch()` calls. Defaults to `"/api/proxy"` when no provider is
+  present. Per-call `url` option overrides the context value.
+
+- **New exports** (`src/index.ts`): re-exports `client.ts`, `context.tsx`, and
+  `hooks.ts` modules from the package entry point.
+
+- **README** section with 6 usage examples: basic GET, POST with data,
+  `useProxyFetch` hook (loading/error/data), polling, error handling (network
+  vs server), and Context setup.
+
+### Changed
+
+- `jest.config.js`: added `.tsx` extension support for React hook tests.
+- `tsconfig.json`: enabled `"jsx": "react-jsx"` for `.tsx` compilation.
+
+### Dev
+
+- 158 total tests (66 new: 29 unit + 28 hook + 9 integration).
+- `client.ts`: 100% coverage (statements, branches, functions, lines).
+- `hooks.ts`: 98.03% statement coverage.
+- Overall: 96.83% statements, 91.78% branches, 100% functions, 98.7% lines.
+
 ## [2.2.3] - 2026-06-06
 
 ### Added
@@ -219,7 +261,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`export const POST = nextProxyHandler(...)`) and asynchronous
   (`nextProxyHandlerAsync`) for advanced initialization.
 
-[Unreleased]: https://github.com/arcademan21/nextjs-proxy/compare/v2.2.3...HEAD
+[Unreleased]: https://github.com/arcademan21/nextjs-proxy/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/arcademan21/nextjs-proxy/compare/v2.2.3...v2.3.0
 [2.2.3]: https://github.com/arcademan21/nextjs-proxy/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/arcademan21/nextjs-proxy/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/arcademan21/nextjs-proxy/compare/v2.2.0...v2.2.1
